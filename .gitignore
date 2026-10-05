@@ -1,3 +1,4 @@
+.claude/
 # local state, never published
 .gm/
 .gm-pre-soa*.wgsl

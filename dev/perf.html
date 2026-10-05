@@ -1,0 +1,488 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>perf</title>
+<pre id="out">starting</pre>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const srcDir = q.get('src') || '../src';
+const { GpuBackend } = await import(srcDir + '/engine.js');
+const { GAMES } = await import(srcDir + '/games/index.js');
+const { Rng, randomGenome } = await import(srcDir + '/core.js');
+const name = q.get('name') || 'perf';
+const post = (body) => fetch('/api/log?name=' + encodeURIComponent(name), { method: 'POST', body });
+window.addEventListener('unhandledrejection', (e) => { post('ERR ' + String(e.reason && (e.reason.stack || e.reason.message || e.reason))); post('done'); });
+window.addEventListener('error', (e) => { post('ERR ' + e.message + ' ' + String(e.error && (e.error.stack || e.error))); post('done'); });
+post('start');
+const log = (line) => { document.getElementById('out').textContent = line; return post(line); };
+const game = GAMES[q.get('game') || 'realm'];
+const mode = q.get('mode') || 'bench';
+const baseDir = q.get('base') || 'base_p19';
+const { GpuBackend: BaseBackend, getDeviceContext: baseCtx } = await import('./' + baseDir + '/engine.js');
+const { GAMES: BASE_GAMES } = await import('./' + baseDir + '/games/index.js');
+const maxEdges = Number(q.get('maxEdges') || 128);
+const K = Number(q.get('k') || 16);
+const defaultK = K;
+const list = (q.get('worlds') || '256,1024,2048,4096').split(',').map(Number);
+const warm = Number(q.get('warm') || 6);
+
+const PHASES = { observe: 1, think: 2, step: 4, learn: 8 };
+const STEP_PHASES = { terrain: 2048, loadact: 4096, saveact: 8192, prescan: 16384, decide: 16, move: 32, channel: 64, great: 128, interact: 256, damage: 512, apply: 1024 };
+const transform = (code) => code
+  .replace('    g_observe(t, tick);', '    if ((U.pad1 & 1u) == 0u) { g_observe(t, tick); }')
+  .replace('      actionBuf[t] = think(t, b, tick);', '      if ((U.pad1 & 2u) == 0u) { actionBuf[t] = think(t, b, tick); }')
+  .replace('    g_step(t, tick);\n    workgroupBarrier();\n    if (t == 0u) {\n      var total', '    if ((U.pad1 & 4u) == 0u) { g_step(t, tick); }\n    workgroupBarrier();\n    if (t == 0u) {\n      var total')
+  .replace('      learn(t, b, rewardBuf[t]);', '      if ((U.pad1 & 8u) == 0u) { learn(t, b, rewardBuf[t]); }')
+  .replace('  if (r_alive(t)) {\n    r_f[t * R_S + RX_SPRINT] = 0;', '  if (r_alive(t) && (U.pad1 & 16u) == 0u) {\n    r_f[t * R_S + RX_SPRINT] = 0;')
+  .replace('  r_bot_prescan(t, tick);', '  if ((U.pad1 & 16384u) == 0u) { r_bot_prescan(t, tick); }')
+  .replace('  if (r_alive(t)) { r_move(t, tick); }', '  if (r_alive(t) && (U.pad1 & 32u) == 0u) { r_move(t, tick); }')
+  .replace('  r_channel(t);', '  if ((U.pad1 & 64u) == 0u) { r_channel(t); }')
+  .replace('  r_great(t);', '  if ((U.pad1 & 128u) == 0u) { r_great(t); }')
+  .replace('  if (t < RW_PLAYERS && r_alive(t)) { r_interact(t); }', '  if (t < RW_PLAYERS && r_alive(t) && (U.pad1 & 256u) == 0u) { r_interact(t); }')
+  .replace('  r_damage(t, tick);', '  if ((U.pad1 & 512u) == 0u) { r_damage(t, tick); }')
+  .replace('  r_fill_terrain(t);\n  if (t == 0u) {\n    r_regrow', '  if ((U.pad1 & 2048u) == 0u) { r_fill_terrain(t); }\n  if (t == 0u) {\n    r_regrow')
+  .replace('  load_acts_coop(wi, t);\n  workgroupBarrier();\n  let evalRefresh', '  if ((U.pad1 & 4096u) == 0u) { load_acts_coop(wi, t); }\n  workgroupBarrier();\n  let evalRefresh')
+  .replace('  save_acts_coop(wi, t);\n  if (t < LEARNERS) { atomicAdd', '  if ((U.pad1 & 8192u) == 0u) { save_acts_coop(wi, t); }\n  if (t < LEARNERS) { atomicAdd')
+  .replace('  r_apply(t, tick);\n}', '  if ((U.pad1 & 1024u) == 0u) { r_apply(t, tick); }\n}');
+
+const options = (worlds, extra) => Object.assign({ game, worlds, islands: Math.max(2, Math.min(32, Math.floor(worlds / 64))), maxEdges, ticksPerDispatch: K, evalFraction: 0.0625, mutation: 1, randomize: true, seed: 4242, migrateCount: 4, migrateEvery: 2, selectEvery: 1, evalEvery: 4, difficultyStart: 100, difficultyEnd: 100 }, extra || {});
+
+const tsState = new WeakMap();
+const gpuTime = async (b, entry, groups) => {
+  let st = tsState.get(b.device);
+  if (!st) {
+    st = { qs: b.device.createQuerySet({ type: 'timestamp', count: 2 }), resolve: b.device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }), staging: b.device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }) };
+    tsState.set(b.device, st);
+  }
+  const enc = b.device.createCommandEncoder();
+  const pass = enc.beginComputePass({ timestampWrites: { querySet: st.qs, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } });
+  pass.setPipeline(b.pipelines[entry]);
+  pass.setBindGroup(0, b.bindGroups[b.archiveIndex]);
+  pass.dispatchWorkgroups(groups);
+  pass.end();
+  enc.resolveQuerySet(st.qs, 0, 2, st.resolve, 0);
+  enc.copyBufferToBuffer(st.resolve, 0, st.staging, 0, 16);
+  b.device.queue.submit([enc.finish()]);
+  await st.staging.mapAsync(GPUMapMode.READ);
+  const t = new BigInt64Array(st.staging.getMappedRange().slice(0));
+  st.staging.unmap();
+  return Number(t[1] - t[0]) / 1e6;
+};
+
+const timeSim = async (b, mask, repeats, K = defaultK) => {
+  const times = [];
+  for (let i = 0; i < repeats; i++) {
+    b.writeUniforms({ ticks: K });
+    b.uniformU32[14] = mask;
+    b.device.queue.writeBuffer(b.buffers.uniforms, 0, b.uniformData);
+    times.push(await gpuTime(b, 'sim_step', Math.min(b.opts.worlds, Number(q.get('groups') || b.opts.worlds))));
+    b.tick += K;
+  }
+  times.sort((a, c) => a - c);
+  return times[0];
+};
+
+if (mode === 'tests') {
+  const b = await GpuBackend.create(options(64, { randomize: false }));
+  const res = await b.runTests();
+  await log(game.id + ' tests: ' + res.map((r) => (r.ok ? 'PASS ' : 'FAIL ') + r.name + ' [' + r.detail + ']').join(' | '));
+  await b.dispose();
+}
+
+if (mode === 'bench') {
+  for (const worlds of list) {
+    const b = await GpuBackend.create(options(worlds));
+    for (let i = 0; i < warm; i++) await b.step();
+    const rows = [];
+    for (let i = 0; i < 5; i++) rows.push((await b.step()).ms);
+    rows.sort((a, c) => a - c);
+    const sim = await b.timeKernel('sim_step', b.opts.worlds, 5);
+    const sel = await b.timeKernel('select_archive', b.opts.islands, 5);
+    const red = await b.timeKernel('reduce_stats', b.opts.islands, 5);
+    const wt = (b.opts.worlds * K) / (sim / 1000);
+    await log(game.id + ' worlds=' + b.opts.worlds + ' K=' + K + ' step=' + rows[2].toFixed(2) + 'ms sim=' + sim.toFixed(2) + 'ms select=' + sel.toFixed(2) + 'ms reduce=' + red.toFixed(2) + 'ms worldTicks/s=' + Math.round(wt) + ' perWorld ticks/s=' + (wt / b.opts.worlds).toFixed(0));
+    await b.dispose();
+  }
+}
+
+if (mode === 'phases') {
+  const worlds = list[0];
+  const b = await GpuBackend.create(Object.assign(options(worlds), { shaderTransform: transform }));
+  for (let i = 0; i < warm; i++) await b.step();
+  const all = Object.assign({}, PHASES, game.id === 'realm' ? STEP_PHASES : {});
+  const masks = { base: 0, scaffold: 1 | 2 | 4 | 8 };
+  for (const k in all) masks[k] = all[k];
+  const best = {};
+  const phaseUntil = performance.now() + Number(q.get('secs') || 0) * 1000;
+  for (let round = 0; round < 15 || performance.now() < phaseUntil; round++) {
+    for (const k in masks) {
+      const ms = await timeSim(b, masks[k], 1);
+      best[k] = Math.min(best[k] === undefined ? Infinity : best[k], ms);
+    }
+  }
+  const out = ['base=' + best.base.toFixed(2), 'scaffold=' + best.scaffold.toFixed(2)];
+  for (const k in all) out.push(k + '=' + (best.base - best[k]).toFixed(2));
+  await log(game.id + ' phases worlds=' + b.opts.worlds + ' K=' + K + ' ms per dispatch (removal deltas, min of 15 interleaved): ' + out.join(' '));
+  await b.dispose();
+}
+const diffBuffers = async (a, b) => {
+  const out = [];
+  for (const nm of ['world', 'brain', 'edgePk', 'edgeW', 'graveyard']) {
+    const bytes = Math.min(a.buffers[nm].size, 64 * 1024 * 1024);
+    const x = new Uint32Array(await a.readWords(a.buffers[nm], 0, bytes));
+    const y = new Uint32Array(await b.readWords(b.buffers[nm], 0, bytes));
+    let d = 0;
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) d++;
+    out.push(nm + ':' + d);
+  }
+  return out.join(',');
+};
+
+if (mode === 'ab') {
+  const deviceCtx = await baseCtx();
+  const ks = (q.get('ks') || String(K)).split(',').map(Number);
+  for (const worlds of list) {
+    const opt = options(worlds, { deviceCtx });
+    const A = await BaseBackend.create(Object.assign({}, opt, { game: BASE_GAMES[game.id] }));
+    const B = await GpuBackend.create(opt);
+    for (let i = 0; i < warm; i++) { await A.step(); await B.step(); }
+    const diff = await diffBuffers(A, B);
+    for (const k of ks) {
+      const ta = [];
+      const tb = [];
+      const until = performance.now() + Number(q.get('secs') || 0) * 1000;
+      for (let i = 0; i < Number(q.get('reps') || 15) || performance.now() < until; i++) {
+        ta.push(await timeSim(A, 0, 1, k));
+        tb.push(await timeSim(B, 0, 1, k));
+      }
+      const mn = (x) => Math.min(...x);
+      const md = (x) => x.slice().sort((p, c) => p - c)[Math.floor(x.length / 2)];
+      await log(game.id + ' AB worlds=' + A.opts.worlds + ' K=' + k + ' base min/med=' + mn(ta).toFixed(2) + '/' + md(ta).toFixed(2) + ' new min/med=' + mn(tb).toFixed(2) + '/' + md(tb).toFixed(2) + ' lows base[' + ta.slice().sort((p, c) => p - c).slice(0, 5).map((x) => x.toFixed(1)).join(',') + '] new[' + tb.slice().sort((p, c) => p - c).slice(0, 5).map((x) => x.toFixed(1)).join(',') + ']' + ' speedup(min)=' + (mn(ta) / mn(tb)).toFixed(2) + ' diffwords[' + diff + ']');
+    }
+    const sa = [];
+    const sb = [];
+    for (let i = 0; i < 9; i++) { sa.push((await A.step()).ms); sb.push((await B.step()).ms); }
+    await log(game.id + ' AB worlds=' + A.opts.worlds + ' full step (sim+select) min base=' + Math.min(...sa).toFixed(2) + ' new=' + Math.min(...sb).toFixed(2));
+    await A.dispose();
+    await B.dispose();
+  }
+}
+
+if (mode === 'occ') {
+  const worlds = list[0];
+  const variants = {
+    base: (c) => c,
+    obsTiny: (c) => c.replace(/var<workgroup> obsBuf: array<atomic<u32>, d+>;/, 'var<workgroup> obsBuf: array<atomic<u32>, 128>;'),
+    obsActHalf: (c) => c.replace(/var<workgroup> obsBuf: array<atomic<u32>, d+>;/, 'var<workgroup> obsBuf: array<atomic<u32>, 128>;').replace(/var<workgroup> act: array<f32, d+>;/, 'var<workgroup> act: array<f32, 1200>;'),
+    tiny: (c) => c.replace(/var<workgroup> obsBuf: array<atomic<u32>, d+>;/, 'var<workgroup> obsBuf: array<atomic<u32>, 128>;').replace(/var<workgroup> act: array<f32, d+>;/, 'var<workgroup> act: array<f32, 256>;')
+  };
+  const backs = {};
+  for (const v in variants) backs[v] = await GpuBackend.create(Object.assign(options(worlds), { shaderTransform: variants[v] }));
+  for (let i = 0; i < warm; i++) for (const v in backs) await backs[v].step();
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 20) * 1000;
+  while (performance.now() < until) {
+    for (const v in backs) {
+      const ms = await timeSim(backs[v], 0, 1);
+      best[v] = Math.min(best[v] === undefined ? Infinity : best[v], ms);
+    }
+  }
+  await log(game.id + ' occupancy experiment K=' + K + ' worlds=' + worlds + ' min ms: ' + Object.keys(best).map((v) => v + '=' + best[v].toFixed(2)).join(' '));
+  for (const v in backs) await backs[v].dispose();
+}
+
+if (mode === 'brain') {
+  const dims = game.dims;
+  const L0 = game.learners;
+  const steps = Number(q.get('steps') || 70);
+  const brainTransform = (code) => code
+    .replace('      let action = think(t, t, k);', '      var action = 0u; if ((U.pad1 & 1u) == 0u) { action = think(t, t, k); }')
+    .replace('if (skip < floor(brain[bb + 10u]) && diff < brain[bb + 9u]) {', 'if (false && skip < floor(brain[bb + 10u]) && diff < brain[bb + 9u]) {')
+    .replace('  for (; i + 8u <= NIN; i += 8u) {', '  for (; i + 8u <= NIN && (U.pad1 & 8u) == 0u; i += 8u) {')
+    .replace(`  for (; i < NIN; i++) {
+    let v = obs_get(t, i);`, `  for (; i < NIN && (U.pad1 & 8u) == 0u; i++) {
+    let v = obs_get(t, i);`)
+    .replace('  for (var i = 0u; i < NIN; i++) { brain[bb + OFF_LASTIN + i] = obs_get(t, i); }', '  for (var i = 0u; i < NIN && (U.pad1 & 16u) == 0u; i++) { brain[bb + OFF_LASTIN + i] = obs_get(t, i); }')
+    .replace(`  let n = brain_n(b);
+  var e = 0u;
+  for (; e + 8u <= n; e += 8u) {`, `  let n = select(brain_n(b), 0u, (U.pad1 & 32u) != 0u);
+  var e = 0u;
+  for (; e + 8u <= n; e += 8u) {`)
+    .replace(`  for (var j = NIN; j < NODES - BIAS; j++) {
+    let x = gain * acc[j];`, `  for (var j = NIN; j < NODES - BIAS && (U.pad1 & 64u) == 0u; j++) {
+    let x = gain * acc[j];`)
+    .replace('      learn(t, t, rewardFx);', '      if ((U.pad1 & 2u) == 0u) { learn(t, t, rewardFx); }')
+    .replace('      if ((u32(life) % 32u) == 0u) { structural(t, t, k); }', '      if ((u32(life) % 32u) == 0u && (U.pad1 & 4u) == 0u) { structural(t, t, k); }');
+  const accShared = (code) => brainTransform(code)
+    .replace('var<workgroup> act:', 'var<workgroup> accS: array<f32, 2320>;\nvar<workgroup> act:')
+    .replace('var acc: array<f32, ' + dims.nNodes + '>;', 'for (var z = NIN; z < NODES; z++) { accS[t * ASTR + z] = 0.0; }')
+    .replace(/\bacc\[([^\]]*)\]/g, 'accS[t * ASTR + ($1)]');
+  const variants = q.get('plain') ? { plain: brainTransform, accShared } : { accShared };
+  const backs = {};
+  for (const v in variants) {
+    backs[v] = await GpuBackend.create(options(4, { evalFraction: 0.5, islands: 2, shaderTransform: variants[v], pipelineEntries: ['init_world', 'brain_test'] }));
+    const genomes = [];
+    for (let a = 0; a < L0; a++) genomes.push(randomGenome(new Rng(1000 + a), maxEdges, dims));
+    backs[v].uploadBrains(backs[v], genomes);
+    const inRng = new Rng(555);
+    const rewardBase = steps * L0 * dims.nIn;
+    const scratch = new Float32Array(rewardBase + 2 * steps * L0);
+    for (let i = 0; i < rewardBase; i++) scratch[i] = Math.fround(inRng.next());
+    const rc = [0, 0, 0, 128, -256, 512, 1536, -1024];
+    for (let i = 0; i < steps * L0; i++) scratch[rewardBase + i] = rc[Math.floor(inRng.next() * rc.length)];
+    backs[v].device.queue.writeBuffer(backs[v].buffers.scratch, 0, scratch);
+    backs[v].writeUniforms({ ticks: steps, tick0: 0 });
+  }
+  const groups = Number(q.get('groups') || 90);
+  const best = {};
+  const masks = { all: 0, thinkOnly: 6, learnOnly: 1 | 4, noInputs: 6 | 8, noCopy: 6 | 16, noEdges: 6 | 32, noFinal: 6 | 64, thinkNothing: 6 | 8 | 16 | 32 | 64 };
+  const until = performance.now() + Number(q.get('secs') || 10) * 1000;
+  while (performance.now() < until) {
+    for (const v in backs) {
+      for (const m in masks) {
+        backs[v].uniformU32[14] = masks[m];
+        backs[v].device.queue.writeBuffer(backs[v].buffers.uniforms, 0, backs[v].uniformData);
+        const key = v + '.' + m;
+        best[key] = Math.min(best[key] === undefined ? Infinity : best[key], await gpuTime(backs[v], 'brain_test', groups));
+      }
+    }
+  }
+  await log(game.id + ' brain_test groups=' + groups + ' steps=' + steps + ' per step us: ' + Object.keys(best).map((m) => m + '=' + (best[m] / steps * 1000).toFixed(1)).join(' '));
+  for (const v in backs) await backs[v].dispose();
+}
+
+if (mode === 'auto') {
+  const deviceCtx = await baseCtx();
+  const worlds = list[0];
+  const secs = Number(q.get('secs') || 30);
+  const impls = { base: [BaseBackend, BASE_GAMES[game.id]], new: [GpuBackend, game] };
+  for (const round of [0, 1]) {
+    for (const name of (q.get('impls') || 'base,new').split(',')) {
+      const [Impl, g] = impls[name];
+      const b = await Impl.create({ game: g, worlds, islands: Math.max(2, Math.min(32, Math.floor(worlds / 64))), maxEdges, mutation: 1, penaltyEnd: 0.02, penaltyRampTicks: 1500000, ticksPerDispatch: 0, difficultyStart: 100, difficultyEnd: 100, deviceCtx });
+      for (let i = 0; i < 6; i++) await b.step();
+      if (b.settle) await b.settle();
+      const t0 = performance.now();
+      const tick0 = b.tick;
+      let passes = 0;
+      while (performance.now() - t0 < secs * 1000) { await b.step(); passes++; }
+      if (b.settle) await b.settle();
+      await b.readStats();
+      const el = (performance.now() - t0) / 1000;
+      await log(game.id + ' AUTO round=' + round + ' ' + name + ' worlds=' + b.opts.worlds + ' ticks/s per world=' + ((b.tick - tick0) / el).toFixed(1) + ' world-ticks/s=' + Math.round(((b.tick - tick0) / el) * b.opts.worlds) + ' passes/s=' + (passes / el).toFixed(1) + ' K=' + (b.currentTicks ? b.currentTicks() : '?') + ' fixedMs=' + (b.fixedMs || 0).toFixed(2));
+      await b.dispose();
+    }
+  }
+}
+
+if (mode === 'obs') {
+  const deviceCtx = await baseCtx();
+  const worlds = list[0];
+  const rep = (code) => code.replace('  g_observe(t, U.tick0);', '  for (var rep = 0u; rep < U.ticks; rep++) { g_observe(t, U.tick0); workgroupBarrier(); }');
+  const impls = { base: [BaseBackend, BASE_GAMES[game.id]], new: [GpuBackend, game] };
+  const backs = {};
+  for (const name in impls) {
+    const [Impl, g] = impls[name];
+    backs[name] = await Impl.create({ game: g, worlds, islands: 2, maxEdges, mutation: 1, ticksPerDispatch: 8, difficultyStart: 100, difficultyEnd: 100, deviceCtx, shaderTransform: rep });
+    for (let i = 0; i < 6; i++) await backs[name].step();
+    if (backs[name].settle) await backs[name].settle();
+  }
+  const groups = Number(q.get('groups') || 90);
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 20) * 1000;
+  while (performance.now() < until) {
+    for (const name in backs) {
+      for (const reps of [1, 9]) {
+        backs[name].writeUniforms({ ticks: reps, tick0: 100 });
+        const ms = await gpuTime(backs[name], 'observe_test', groups);
+        const key = name + reps;
+        best[key] = Math.min(best[key] === undefined ? Infinity : best[key], ms);
+      }
+    }
+  }
+  await log(game.id + ' observe cost per call us (one wave, groups=' + groups + '): base=' + ((best.base9 - best.base1) / 8 * 1000).toFixed(1) + ' new=' + ((best.new9 - best.new1) / 8 * 1000).toFixed(1) + ' | raw base1=' + best.base1.toFixed(3) + ' new1=' + best.new1.toFixed(3));
+  for (const name in backs) await backs[name].dispose();
+}
+
+if (mode === 'envstep') {
+  const deviceCtx = await baseCtx();
+  const worlds = list[0];
+  const impls = { base: [BaseBackend, BASE_GAMES[game.id]], new: [GpuBackend, game] };
+  const backs = {};
+  for (const name in impls) {
+    const [Impl, g] = impls[name];
+    backs[name] = await Impl.create({ game: g, worlds, islands: Math.max(2, Math.min(32, Math.floor(worlds / 64))), maxEdges, mutation: 1, ticksPerDispatch: 8, difficultyStart: 100, difficultyEnd: 100, deviceCtx, shaderTransform: q.get('tf') && name === 'new' ? transform : undefined });
+    for (let i = 0; i < Number(q.get('warm') || 6); i++) await backs[name].step();
+    if (backs[name].settle) await backs[name].settle();
+  }
+  const groups = Number(q.get('groups') || 90);
+  const masks = (q.get('masks') || '0').split(',').map(Number);
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 20) * 1000;
+  while (performance.now() < until) {
+    for (const name in backs) {
+      for (const m of name === 'base' ? [0] : masks) {
+        for (const reps of [1, 9]) {
+          backs[name].writeUniforms({ ticks: reps, tick0: 100 });
+          backs[name].uniformU32[14] = m;
+          backs[name].device.queue.writeBuffer(backs[name].buffers.uniforms, 0, backs[name].uniformData);
+          const ms = await gpuTime(backs[name], 'env_test', groups);
+          const key = name + m + '_' + reps;
+          best[key] = Math.min(best[key] === undefined ? Infinity : best[key], ms);
+        }
+      }
+    }
+  }
+  const row = (name, m) => name + m + ' step=' + ((best[name + m + '_9'] - best[name + m + '_1']) / 8 * 1000).toFixed(1) + 'us load+1tick=' + (best[name + m + '_1'] * 1000).toFixed(0) + 'us';
+  await log(game.id + ' env_test groups=' + groups + ' ' + [row('base', 0)].concat(masks.map((m) => row('new', m))).join(' | '));
+  for (const name in backs) await backs[name].dispose();
+}
+
+if (mode === 'obs3') {
+  const worlds = list[0];
+  const tf = (code) => code
+    .replace('  g_observe(t, U.tick0);', '  for (var rep = 0u; rep < U.ticks; rep++) { g_observe(t, U.tick0); workgroupBarrier(); }')
+    .replace('for (var i = r_gcell_start(u32(cy * 8 + cxa)) + q; i < i1; i += parts) {', 'for (var i = r_gcell_start(u32(cy * 8 + cxa)) + q; i < select(i1, 0u, (U.pad1 & 1u) != 0u); i += parts) {')
+    .replace('for (var i = q * slotStep; i < q * slotStep + slotStep; i++) { set_obs(', 'for (var i = q * slotStep; i < q * slotStep + select(slotStep, 0u, (U.pad1 & 64u) != 0u); i++) { set_obs(')
+    .replace('for (var j = k0; j < k0 + entStep; j++) {', 'for (var j = k0; j < k0 + select(entStep, 0u, (U.pad1 & 2u) != 0u); j++) {')
+    .replace('if ((1u % parts) == q) {', 'if ((1u % parts) == q && (U.pad1 & 4u) == 0u) {')
+    .replace('if ((0u % parts) == q) {', 'if ((0u % parts) == q && (U.pad1 & 8u) == 0u) {')
+    .replace('if ((2u % parts) == q) {', 'if ((2u % parts) == q && (U.pad1 & 16u) == 0u) {')
+    .replace('if ((3u % parts) == q) {', 'if ((3u % parts) == q && (U.pad1 & 32u) == 0u) {');
+  const b = await GpuBackend.create(Object.assign(options(worlds), { shaderTransform: tf }));
+  for (let i = 0; i < 6; i++) await b.step();
+  await b.settle();
+  const groups = Number(q.get('groups') || 90);
+  const masks = { all: 0, noNodes: 1, noEnts: 2, noAlly: 4, noB0: 8, noB2: 16, noB3: 32, noScan: 3, noBlocks: 60, noOut: 64, noNodesOut: 65, none: 127 };
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 20) * 1000;
+  while (performance.now() < until) {
+    for (const m in masks) {
+      for (const reps of [1, 9]) {
+        b.writeUniforms({ ticks: reps, tick0: 100 });
+        b.uniformU32[14] = masks[m];
+        b.device.queue.writeBuffer(b.buffers.uniforms, 0, b.uniformData);
+        const ms = await gpuTime(b, 'observe_test', groups);
+        const key = m + reps;
+        best[key] = Math.min(best[key] === undefined ? Infinity : best[key], ms);
+      }
+    }
+  }
+  await log(game.id + ' observe per call us: ' + Object.keys(masks).map((m) => m + '=' + ((best[m + 9] - best[m + 1]) / 8 * 1000).toFixed(1)).join(' '));
+  await b.dispose();
+}
+
+if (mode === 'dup') {
+  const worlds = list[0];
+  const dup = (code, pairs) => pairs.reduce((c, [call, bit]) => { if (!c.includes(call)) throw new Error('missing ' + call); return c.replace(call, call + ' if ((U.pad1 & ' + bit + 'u) != 0u) { ' + call.trim() + ' }'); }, code);
+  const pairs = [['  if (t < RW_PLAYERS && r_alive(t)) { r_shape(t, tick); }', 1], ['  r_bot_prescan(t, tick);', 2], ['  if (r_alive(t)) { r_move(t, tick); }', 4], ['  r_channel(t);', 8], ['  r_great(t);', 16], ['  if (t < RW_PLAYERS && r_alive(t)) { r_interact(t); }', 32], ['  r_damage(t, tick);', 64], ['  r_share(t);', 128]];
+  const tf = (code) => dup(code, pairs);
+  const deviceCtx = await baseCtx();
+  const b = await GpuBackend.create(Object.assign(options(worlds), { shaderTransform: tf, deviceCtx }));
+  for (let i = 0; i < 6; i++) await b.step();
+  await b.settle();
+  const groups = Number(q.get('groups') || 90);
+  const names = ['none', 'shape', 'prescan', 'move', 'channel', 'great', 'interact', 'damage', 'share'];
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 30) * 1000;
+  while (performance.now() < until) {
+    for (let m = 0; m < names.length; m++) {
+      const mask = m === 0 ? 0 : 1 << (m - 1);
+      for (const reps of [1, 9]) {
+        b.writeUniforms({ ticks: reps, tick0: 100 });
+        b.uniformU32[14] = mask;
+        b.device.queue.writeBuffer(b.buffers.uniforms, 0, b.uniformData);
+        const ms = await gpuTime(b, 'env_test', groups);
+        const key = names[m] + reps;
+        best[key] = Math.min(best[key] === undefined ? Infinity : best[key], ms);
+      }
+    }
+  }
+  const per = (n) => (best[n + 9] - best[n + 1]) / 8 * 1000;
+  await log(game.id + ' step phase marginal cost us (duplicate call): total=' + per('none').toFixed(1) + ' ' + names.slice(1).map((n) => n + '=' + (per(n) - per('none')).toFixed(1)).join(' '));
+  await b.dispose();
+}
+
+if (mode === 'dup2') {
+  const worlds = list[0];
+  const must = (code, a, r) => { if (!code.includes(a)) throw new Error("missing " + a); return code.replace(a, r); };
+  const tf = (code) => {
+    let c = must(code, `for (var a = 0u; a < 64u; a++) {
+    if (r_act[a] != RA_ATTACK`, `for (var aa = 0u; aa < 64u + select(0u, 64u, (U.pad1 & 1u) != 0u); aa++) {
+    let a = aa & 63u;
+    if (r_act[a] != RA_ATTACK`);
+    c = must(c, '    r_ally[v] = r_ally_count(v);', `    r_ally[v] = r_ally_count(v);
+    if ((U.pad1 & 2u) != 0u) { r_ally[v] = r_ally[v] + r_ally_count(v); }`);
+    c = must(c, `for (var p = 0u; p < RW_PLAYERS; p++) {
+      if (!r_participant(p, v, tick)) { continue; }`, `for (var pp = 0u; pp < select(32u, 64u, (U.pad1 & 4u) != 0u); pp++) {
+      let p = pp & 31u;
+      if (!r_participant(p, v, tick)) { continue; }`);
+    return c;
+  };
+  const deviceCtx = await baseCtx();
+  const b = await GpuBackend.create(Object.assign(options(worlds), { shaderTransform: tf, deviceCtx }));
+  for (let i = 0; i < 6; i++) await b.step();
+  await b.settle();
+  const groups = Number(q.get('groups') || 90);
+  const names = ['none', 'attackers', 'ally', 'bossloop'];
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 30) * 1000;
+  while (performance.now() < until) {
+    for (let m = 0; m < names.length; m++) {
+      const mask = m === 0 ? 0 : 1 << (m - 1);
+      for (const reps of [1, 9]) {
+        b.writeUniforms({ ticks: reps, tick0: 100 });
+        b.uniformU32[14] = mask;
+        b.device.queue.writeBuffer(b.buffers.uniforms, 0, b.uniformData);
+        const ms = await gpuTime(b, 'env_test', groups);
+        const key = names[m] + reps;
+        best[key] = Math.min(best[key] === undefined ? Infinity : best[key], ms);
+      }
+    }
+  }
+  const per = (n) => (best[n + 9] - best[n + 1]) / 8 * 1000;
+  await log(game.id + ' damage part marginal cost us: total=' + per('none').toFixed(1) + ' ' + names.slice(1).map((n) => n + '=' + (per(n) - per('none')).toFixed(1)).join(' '));
+  await b.dispose();
+}
+
+if (mode === 'obs2') {
+  const worlds = list[0];
+  const tf = (code) => code
+    .replace('  g_observe(t, U.tick0);', '  for (var rep = 0u; rep < U.ticks; rep++) { g_observe(t, U.tick0); workgroupBarrier(); }')
+    .replace('  if (q == 0u) {\n    var berry', '  if (q == 0u && (U.pad1 & 1u) == 0u) {\n    var berry')
+    .replace('  } else if (q == 1u) {\n    var tree', '  } else if (q == 1u && (U.pad1 & 2u) == 0u) {\n    var tree')
+    .replace('  } else if (q == 2u) {\n    var ore', '  } else if (q == 2u && (U.pad1 & 4u) == 0u) {\n    var ore')
+    .replace('  } else {\n    r_scan_entities', '  } else if (q == 3u && (U.pad1 & 8u) == 0u) {\n    r_scan_entities');
+  const b = await GpuBackend.create(Object.assign(options(worlds), { shaderTransform: tf }));
+  for (let i = 0; i < 6; i++) await b.step();
+  await b.settle();
+  const groups = Number(q.get('groups') || 90);
+  const masks = { all: 0, no0: 1, no1: 2, no2: 4, no3: 8, none: 15 };
+  const best = {};
+  const until = performance.now() + Number(q.get('secs') || 20) * 1000;
+  while (performance.now() < until) {
+    for (const m in masks) {
+      for (const reps of [1, 9]) {
+        b.writeUniforms({ ticks: reps, tick0: 100 });
+        b.uniformU32[14] = masks[m];
+        b.device.queue.writeBuffer(b.buffers.uniforms, 0, b.uniformData);
+        const ms = await gpuTime(b, 'observe_test', groups);
+        const key = m + reps;
+        best[key] = Math.min(best[key] === undefined ? Infinity : best[key], ms);
+      }
+    }
+  }
+  await log(game.id + ' observe per call us: ' + Object.keys(masks).map((m) => m + '=' + ((best[m + 9] - best[m + 1]) / 8 * 1000).toFixed(1)).join(' '));
+  await b.dispose();
+}
+
+if (mode === 'ksweep') {
+  const b = await GpuBackend.create(options(list[0]));
+  for (let i = 0; i < warm; i++) await b.step();
+  const out = [];
+  for (const k of [0, 1, 2, 4, 8, 16, 32]) out.push('K' + k + '=' + (await timeSim(b, 0, 7, k)).toFixed(2));
+  const sel = await b.timeKernel('select_archive', b.opts.islands, 7);
+  await log(game.id + ' ksweep worlds=' + b.opts.worlds + ' sim ms: ' + out.join(' ') + ' select=' + sel.toFixed(2));
+  await b.dispose();
+}
+await log('done');
+</script>

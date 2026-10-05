@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>train play</title>
+<style>
+:root{--bg:#10141a;--fg:#d8dee9;--dim:#7b8698;--panel:#1a2029}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px}
+canvas{background:#000;image-rendering:pixelated;width:min(92vw,640px);aspect-ratio:1;border:1px solid #2a3340}
+#hud{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;background:var(--panel);padding:8px 14px;border-radius:6px}
+#hud b{color:var(--dim);font-weight:500;margin-right:4px}
+#status,#help{color:var(--dim);text-align:center;max-width:640px}
+</style>
+</head>
+<body>
+<div id="hud"><span><b>hp</b><span id="hp">-</span></span><span><b>energy</b><span id="energy">-</span></span><span><b>gold</b><span id="gold">-</span></span><span><b>score</b><span id="score">-</span></span><span><b>tick</b><span id="tick">-</span></span></div>
+<canvas id="c" width="512" height="512"></canvas>
+<div id="status">connecting</div>
+<div id="help">Arrows move, space uses (action "use"), F attacks, T trades; digits pick an action index directly. Green = you, blue = NPC learner, orange = scripted, magenta = other human.</div>
+<script type="module">
+import { FixedStepLoop } from './npc.js'
+
+const KEY_ACTION_NAMES = { ArrowUp: ['up', '-y'], ArrowDown: ['down', '+y'], ArrowLeft: ['left', '-x'], ArrowRight: ['right', '+x'], ' ': ['use', 'boost'], f: ['attack'], F: ['attack'], t: ['trade'], T: ['trade'] }
+const canvas = document.getElementById('c')
+const ctx = canvas.getContext('2d')
+const el = id => document.getElementById(id)
+const held = []
+let socket = null
+let me = -1
+let game = null
+let latest = null
+let loop = null
+let customRender = null
+
+function actionForKey(key) {
+  if (!game) return undefined
+  if (/^[0-9]$/.test(key)) return Number(key) < game.actionNames.length ? Number(key) : undefined
+  const names = KEY_ACTION_NAMES[key] || []
+  for (const name of names) {
+    const index = game.actionNames.indexOf(name)
+    if (index >= 0) return index
+  }
+  return undefined
+}
+
+function currentAction() {
+  return held.length ? held[held.length - 1] : 0
+}
+
+function sendAction() {
+  if (!socket || socket.readyState !== 1) return
+  const outputs = new Array(game.actionNames.length).fill(0)
+  for (const a of held) outputs[a] = 1
+  socket.send(JSON.stringify({ t: 'act', a: currentAction(), o: outputs }))
+}
+
+addEventListener('keydown', e => {
+  const a = actionForKey(e.key)
+  if (a === undefined) return
+  e.preventDefault()
+  if (!held.includes(a)) held.push(a)
+  sendAction()
+})
+
+addEventListener('keyup', e => {
+  const a = actionForKey(e.key)
+  if (a === undefined) return
+  const i = held.indexOf(a)
+  if (i >= 0) held.splice(i, 1)
+})
+
+function colorOf(word) {
+  const palette = game.palette
+  return palette[(word & 15) % palette.length]
+}
+
+function draw() {
+  if (!latest || !game) return
+  const s = latest
+  if (s.kind !== 'grid' && customRender) {
+    customRender(ctx, s, canvas.width, canvas.height)
+    highlightMe(s)
+    drawHud(s)
+    return
+  }
+  if (s.kind !== 'grid') {
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = '#d8dee9'
+    ctx.font = '12px monospace'
+    ctx.fillText('snapshot kind ' + s.kind + ' has no built-in renderer', 10, 20)
+    return
+  }
+  const cw = canvas.width / s.width
+  const ch = canvas.height / s.height
+  for (let y = 0; y < s.height; y++) for (let x = 0; x < s.width; x++) {
+    const word = s.tile[y * s.width + x]
+    ctx.fillStyle = colorOf(word)
+    ctx.fillRect(x * cw, y * ch, cw, ch)
+    if (((word >>> 4) & 4095) > 0) {
+      ctx.fillStyle = 'rgba(16,40,20,.7)'
+      ctx.fillRect(x * cw, y * ch, cw, ch)
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,.25)'
+    ctx.strokeRect(x * cw, y * ch, cw, ch)
+  }
+  const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]]
+  s.agents.forEach((a, i) => {
+    if (a.alive === false) return
+    ctx.fillStyle = i === me ? '#3ddc84' : a.human ? '#d946ef' : a.evo ? '#4aa3ff' : '#ff9f43'
+    const px = cw * 0.16
+    ctx.fillRect(a.x * cw + px, a.y * ch + px, cw - 2 * px, ch - 2 * px)
+    const d = dirs[a.face & 3]
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(a.x * cw + cw / 2 + d[0] * cw * 0.3 - 2, a.y * ch + ch / 2 + d[1] * ch * 0.3 - 2, 4, 4)
+    if (a.gold > 0) {
+      ctx.fillStyle = '#ffd700'
+      ctx.fillText(String(a.gold), a.x * cw + 3, a.y * ch + 11)
+    }
+  })
+  drawHud(s)
+}
+
+function highlightMe(s) {
+  const m = s.agents[me]
+  if (!m || !s.width) return
+  ctx.strokeStyle = '#3ddc84'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.arc(m.x * canvas.width / s.width, m.y * canvas.height / s.height, 10, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.lineWidth = 1
+}
+
+const HUD_HIDDEN = new Set(['x', 'y', 'face', 'evo', 'alive', 'human', 'r'])
+
+function drawHud(s) {
+  const m = s.agents[me]
+  const fields = m ? Object.keys(m).filter(k => typeof m[k] === 'number' && !HUD_HIDDEN.has(k)) : []
+  const cells = fields.map(k => '<span><b>' + k + '</b>' + Math.round(m[k] * 10) / 10 + '</span>')
+  cells.push('<span><b>score</b>' + ((s.scores[me] || 0).toFixed(1)) + '</span>')
+  cells.push('<span><b>tick</b>' + s.tick + '</span>')
+  el('hud').innerHTML = cells.join('')
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  socket = new WebSocket(proto + '://' + location.host + '/ws')
+  socket.onopen = () => { el('status').textContent = 'connected' }
+  socket.onclose = () => {
+    el('status').textContent = 'disconnected, retrying'
+    me = -1
+    if (loop) loop.stop()
+    setTimeout(connect, 1000)
+  }
+  socket.onmessage = ev => {
+    const m = JSON.parse(ev.data)
+    if (m.t === 'hello') {
+      me = m.slot
+      game = m.game
+      customRender = null
+      if (game.hasRender) import('/render.js').then(mod => { customRender = mod.default })
+      el('status').textContent = 'playing ' + game.name + ' as slot ' + m.slot + ' at ' + game.tickHz + ' Hz'
+      if (loop) loop.stop()
+      loop = new FixedStepLoop({ hz: game.tickHz, step: sendAction })
+      loop.start()
+    } else if (m.t === 'snap') {
+      latest = m
+      draw()
+    } else if (m.t === 'full') el('status').textContent = 'server full, spectating'
+  }
+}
+
+window.__play = { get me() { return me }, get game() { return game }, get latest() { return latest }, send: a => socket.send(JSON.stringify({ t: 'act', a })) }
+connect()
+</script>
+</body>
+</html>

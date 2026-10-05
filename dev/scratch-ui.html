@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ui check</title>
+<iframe id="f" src="../index.html" width="1500" height="1100" style="border:0"></iframe>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'ui';
+const post = (path, body) => fetch('/api/' + path + '?name=' + encodeURIComponent(name), { method: 'POST', body });
+const log = (line) => post('log', line);
+window.addEventListener('error', (e) => post('log', 'ERR ' + e.message + ' ' + (e.error && e.error.stack)));
+window.addEventListener('unhandledrejection', (e) => post('log', 'ERR ' + (e.reason && (e.reason.stack || e.reason.message || e.reason))));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const until = async (fn, ms, label) => {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    try { if (fn()) return true; } catch {}
+    await sleep(250);
+  }
+  throw new Error('timeout waiting for ' + label);
+};
+
+const frame = document.getElementById('f');
+await new Promise((resolve) => frame.addEventListener('load', resolve));
+const w = frame.contentWindow;
+const d = w.document;
+const $ = (id) => d.getElementById(id);
+const change = (id, value) => {
+  $(id).value = value;
+  $(id).dispatchEvent(new w.Event('change', { bubbles: true }));
+};
+await until(() => w.trainApp && w.trainApp.backend && !w.trainApp.busy, 120000, 'initial backend');
+await log('initial backend ' + w.trainApp.backend.info.trainer + ' policies ' + (w.trainApp.backend.info.policies || 1) + ' popEditorHidden=' + $('popEditor').hidden + ' popApplyDisabled=' + $('popApplyBtn').disabled + ' chartPopCardHidden=' + $('chartPopCard').hidden);
+
+change('trainer', 'ppo');
+change('game', 'realm');
+await until(() => w.trainApp.backend && !w.trainApp.busy, 120000, 'realm backend');
+await log('game now ' + $('game').value + ' channels ' + d.querySelectorAll('#popEditor tr[data-role] .pop-weight').length / Math.max(1, d.querySelectorAll('#popEditor tr[data-role]').length));
+change('worlds', 128);
+change('ppoPolicies', 3);
+const rows = Array.from(d.querySelectorAll('#popEditor tr'));
+await log('editor rows ' + rows.length + ' header ' + rows[0].innerText.replace(/\s+/g, ' ') + ' | roles ' + Array.from(d.querySelectorAll('#popEditor .pop-name')).map((i) => i.value).join(','));
+await log('editor weights ' + Array.from(d.querySelectorAll('#popEditor tr[data-role]')).map((tr) => Array.from(tr.querySelectorAll('.pop-weight')).map((i) => i.value).join('/')).join(' | '));
+change('ppoPopMix', 0);
+const nameInput = d.querySelectorAll('#popEditor .pop-name')[2];
+nameInput.value = 'smith';
+$('resetBtn').click();
+await until(() => w.trainApp.backend && !w.trainApp.busy && w.trainApp.backend.K === 3, 180000, 'population backend');
+await log('population backend K=' + w.trainApp.backend.K + ' roles ' + w.trainApp.backend.pop.names.join(',') + ' weights ' + w.trainApp.backend.pop.weights.map((r) => Array.from(r).join('/')).join(' | ') + ' popApplyDisabled=' + $('popApplyBtn').disabled);
+
+$('startBtn').click();
+await until(() => w.trainApp.stats && w.trainApp.stats.pop && w.trainApp.history.tick.length > 6, 240000, 'pop stats');
+await sleep(4000);
+const stats = w.trainApp.stats;
+await log('stats pop roles ' + stats.pop.roles.map((r) => r.name + ':' + r.train.rate.toFixed(5) + '/' + r.evalPure.rewRate.toFixed(5)).join(' ') + ' mixed ' + stats.pop.mixed.rewRate.toFixed(5) + ' tick ' + stats.tick);
+const grid = $('statGrid').innerText;
+await log('statGrid has role table: ' + /role\s+train\/tick/.test(grid) + ' mentions smith: ' + /smith/.test(grid) + ' mixed team row: ' + /mixed team/.test(grid));
+const canvas = $('chartPop');
+const ctx = canvas.getContext('2d');
+const image = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+let painted = 0;
+for (let i = 3; i < image.length; i += 4) if (image[i] > 0) painted++;
+await log('per-role chart card hidden=' + $('chartPopCard').hidden + ' canvas ' + canvas.width + 'x' + canvas.height + ' painted pixels ' + painted + ' history keys ' + Object.keys(w.trainApp.history).filter((k) => k.startsWith('pe_')).join(','));
+
+const roleWeights = d.querySelectorAll('#popEditor tr[data-role]')[1].querySelectorAll('.pop-weight');
+const weightInput = roleWeights[Math.min(2, roleWeights.length - 1)];
+weightInput.value = '3.5';
+$('startBtn').click();
+await until(() => !w.trainApp.running && !w.trainApp.loopActive && !w.trainApp.busy, 60000, 'pause');
+$('popApplyBtn').click();
+await sleep(500);
+await log('after apply hunter weights ' + Array.from(w.trainApp.backend.pop.weights[1]).join('/') + ' role names ' + w.trainApp.backend.pop.names.join(','));
+const optBlock = await w.trainApp.backend.readFloats('opt', w.trainApp.backend.layout.optStride + w.trainApp.backend.layout.optWeights, 4);
+await log('gpu weights of role 1 ' + Array.from(optBlock).join('/'));
+const members = await w.trainApp.backend.exportChampions(1);
+await log('export members ' + members.length + ' roles ' + members.map((m) => m.role + ':' + m.genome.format + ':' + m.genome.edges.length).join(',') + ' weights ' + members.map((m) => m.weights.join('/')).join(' | '));
+$('startBtn').click();
+await sleep(8000);
+$('startBtn').click();
+await until(() => !w.trainApp.running && !w.trainApp.loopActive && !w.trainApp.busy, 60000, 'pause 2');
+$('saveBtn').click();
+await until(() => !w.trainApp.busy && /Checkpoint|checkpoint/.test($('ckptText').textContent), 60000, 'save').catch(() => {});
+await sleep(1500);
+await log('checkpoint text ' + $('ckptText').textContent);
+$('restoreBtn').click();
+await sleep(1000);
+await until(() => !w.trainApp.busy && w.trainApp.backend && w.trainApp.backend.K === 3, 120000, 'restore');
+await log('restored K=' + w.trainApp.backend.K + ' roles ' + w.trainApp.backend.pop.names.join(',') + ' hunter weights ' + Array.from(w.trainApp.backend.pop.weights[1]).join('/') + ' banner ' + ($('errorBanner').hidden ? 'none' : $('errorBanner').textContent));
+change('ppoPolicies', 1);
+await log('after policies=1 editor hidden=' + $('popEditor').hidden);
+await log('done');
+</script>

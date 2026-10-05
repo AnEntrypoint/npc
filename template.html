@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPC Brain Trainer</title>
+<style>
+:root{
+  --bg:#0b0e14;--panel:#121722;--panel2:#171d2b;--line:#252d3f;--text:#dbe2f0;--muted:#8592ab;
+  --evo:#4cc9f0;--bot:#f4a261;--eval:#80ed99;--violet:#b794f6;--gold:#ffd166;--bad:#ff6b6b;--ok:#80ed99;--warn:#ffd166;
+  --accent:#4cc9f0;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+body{min-height:100vh}
+h1{font-size:18px;margin:0;letter-spacing:.3px}
+h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:12px;color:var(--muted)}
+.pill b{color:var(--text);font-weight:600}
+.pill.gpu b{color:var(--ok)}
+.pill.cpu b{color:var(--warn)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.run{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.spacer{flex:1}
+.banner{margin:10px 16px 0;padding:10px 14px;border-radius:8px;border:1px solid var(--warn);background:#2b2410;color:var(--warn)}
+.banner.err{border-color:var(--bad);background:#2b1414;color:var(--bad)}
+.banner[hidden]{display:none}
+.layout{display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px 16px 40px;align-items:start}
+@media(max-width:940px){.layout{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+.stack{display:flex;flex-direction:column;gap:14px;min-width:0}
+details>summary{cursor:pointer;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;font-size:13px;font-weight:600;list-style:none;padding:2px 0}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"+ ";color:var(--accent)}
+details[open]>summary::before{content:"- "}
+details[open]>summary{margin-bottom:8px}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+.fields .wide{grid-column:1/-1}
+label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--muted)}
+label.check{flex-direction:row;align-items:center;gap:8px;color:var(--text);font-size:13px}
+input[type=number],input[type=text],select{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font:inherit}
+input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
+button,.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 12px;font:inherit;cursor:pointer}
+button:hover,.btn:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#04202a;border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.hint{font-size:12px;color:var(--muted)}
+.tag{font-size:10px;color:var(--violet);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:4px}
+.views{display:grid;grid-template-columns:minmax(280px,420px) 1fr;gap:14px}
+@media(max-width:1200px){.views{grid-template-columns:1fr}}
+canvas{display:block;width:100%;background:var(--bg);border-radius:6px;border:1px solid var(--line)}
+#worldCanvas,#heatCanvas{image-rendering:pixelated;aspect-ratio:1/1;cursor:crosshair;max-width:560px;margin:0 auto}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.chart canvas{height:200px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+td,th{padding:3px 8px;border-bottom:1px solid var(--line);text-align:right;font-size:12px}
+td:first-child,th:first-child{text-align:left;color:var(--muted)}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 24px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:6px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Consolas,monospace;max-height:300px;overflow:auto;color:var(--text)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px}
+.kv span:nth-child(odd){color:var(--muted)}
+.sr{position:absolute;left:-9999px}
+kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;background:var(--panel2)}
+</style>
+</head>
+<body>
+<header>
+  <h1>NPC Brain Trainer</h1>
+  <span class="pill" id="kindPill"><span class="dot" id="runDot"></span><b id="kindText">starting</b></span>
+  <span class="pill">tick <b id="tickText">0</b></span>
+  <span class="pill">passes <b id="passText">0</b></span>
+  <span class="pill"><b id="rateText">0</b> agent-ticks/s</span>
+  <span class="spacer"></span>
+  <button class="primary" id="startBtn" type="button" disabled>Start</button>
+  <button id="resetBtn" type="button" disabled>Reset</button>
+</header>
+<div class="banner" id="hiddenBanner" role="status" hidden>This tab is in the background. Browsers throttle timers, animation and GPU work in hidden tabs, so training is much slower until you bring it back to the foreground or keep it in its own visible window.</div>
+<div class="banner err" id="errorBanner" role="alert" hidden></div>
+<div class="layout">
+  <div class="stack">
+    <div class="card">
+      <details open>
+        <summary>Game</summary>
+        <label>Game<select id="game"></select></label>
+        <div id="gameInfo" class="kv" style="margin-top:8px"></div>
+      </details>
+    </div>
+    <div class="card">
+      <details open>
+        <summary>Run controls</summary>
+        <div class="fields">
+          <label>Worlds (64-4096)<input type="number" id="worlds" min="1" max="4096" step="1" value="256"></label>
+          <label>Islands<input type="number" id="islands" min="1" max="256" step="1" value="4"></label>
+          <label>Max edges<input type="number" id="maxEdges" min="30" max="512" step="1" value="256"></label>
+          <label>Eval fraction<input type="number" id="evalFraction" min="0" max="1" step="0.01" value="0.125"></label>
+          <label>Migration interval (passes)<input type="number" id="migrateEvery" min="1" step="1" value="8"></label>
+          <label>Migrants per event<input type="number" id="migrateCount" min="0" step="1" value="4"></label>
+          <label>Select every (passes)<input type="number" id="selectEvery" min="1" step="1" value="1"></label>
+          <label>Eval refresh (lifetimes, 0 = never)<input type="number" id="evalEvery" min="0" step="1" value="1"></label>
+          <label>Seed<input type="number" id="seed" min="0" step="1" value="1"></label>
+          <label class="check"><input type="checkbox" id="randomize" checked> Randomize worlds</label>
+          <label class="check"><input type="checkbox" id="tpdAuto" checked> Auto ticks/dispatch</label>
+          <label>Ticks per dispatch<input type="number" id="tpd" min="1" max="4096" step="1" value="32" disabled></label>
+        </div>
+        <p class="hint">Changes here apply on Reset, except ticks per dispatch and eval refresh which apply live.</p>
+      </details>
+    </div>
+    <div class="card">
+      <details open>
+        <summary>Evolution <span class="tag">live</span></summary>
+        <div class="fields">
+          <label>Mutation<input type="number" id="mutation" min="0" max="10" step="0.05" value="1"></label>
+          <label>Penalty start<input type="number" id="penaltyStart" min="0" step="0.01" value="0"></label>
+          <label>Penalty end<input type="number" id="penaltyEnd" min="0" step="0.01" value="0.05"></label>
+          <label>Penalty ramp (ticks)<input type="number" id="penaltyRampTicks" min="1" step="1000" value="200000"></label>
+          <label>Difficulty start (0-100)<input type="number" id="difficultyStart" min="0" max="100" step="5" value="30"></label>
+          <label>Difficulty end (0-100)<input type="number" id="difficultyEnd" min="0" max="100" step="5" value="100"></label>
+          <label>Difficulty ramp (ticks)<input type="number" id="difficultyRampTicks" min="1" step="10000" value="300000"></label>
+        </div>
+      </details>
+    </div>
+    <div class="card">
+      <details open>
+        <summary>PPO <span class="tag">live</span></summary>
+        <div class="fields">
+          <label>Hidden units<input type="number" id="ppoHidden" min="8" max="220" step="1" value="96"></label>
+          <label>Rollout ticks<input type="number" id="ppoRollout" min="4" max="256" step="1" value="31"></label>
+          <label>Learning rate<input type="number" id="ppoLr" min="0" step="0.0001" value="0.001"></label>
+          <label>Final learning rate<input type="number" id="ppoLrEnd" min="0" step="0.0001" value="0.001"></label>
+          <label>Entropy bonus<input type="number" id="ppoEntropy" min="0" step="0.001" value="0.001"></label>
+          <label>Clip<input type="number" id="ppoClip" min="0.01" max="1" step="0.01" value="0.2"></label>
+          <label>Epochs<input type="number" id="ppoEpochs" min="1" max="16" step="1" value="1"></label>
+          <label>Minibatches<input type="number" id="ppoMinibatches" min="1" max="32" step="1" value="4"></label>
+          <label>Gamma<input type="number" id="ppoGamma" min="0.5" max="0.9999" step="0.001" value="0.99"></label>
+          <label>Lambda<input type="number" id="ppoLambda" min="0" max="1" step="0.01" value="0.95"></label>
+          <label>League (0 off, 1 on)<input type="number" id="ppoLeague" min="0" max="1" step="1" value="1"></label>
+          <label>Snapshot every (iterations)<input type="number" id="ppoSnapshot" min="1" step="1" value="40"></label>
+          <label>Recurrent memory (0/1)<input type="number" id="ppoRecurrent" min="0" max="1" step="1" value="0"></label>
+          <label>Bias nodes (0/1)<input type="number" id="ppoBias" min="0" max="1" step="1" value="0"></label>
+          <label>Normalise inputs (0/1)<input type="number" id="ppoObsNorm" min="0" max="1" step="1" value="0"></label>
+          <label>Learn leak (0/1)<input type="number" id="ppoLearnLeak" min="0" max="1" step="1" value="1"></label>
+          <label>Leak time constant max<input type="number" id="ppoLeakTau" min="1" max="200" step="1" value="16"></label>
+          <label>Reward clip (0 off)<input type="number" id="ppoRewardClip" min="0" step="0.5" value="0"></label>
+          <label>Value target clip (0 off)<input type="number" id="ppoValueClip" min="0" step="0.5" value="0"></label>
+          <label>Auto curriculum (0/1)<input type="number" id="ppoCurriculum" min="0" max="1" step="1" value="0"></label>
+          <label>Curriculum start difficulty<input type="number" id="ppoCurDiff" min="0" max="100" step="5" value="30"></label>
+          <label>Difficulty step<input type="number" id="ppoCurStep" min="1" max="50" step="1" value="5"></label>
+          <label>Raise when life/maxAge over<input type="number" id="ppoCurUp" min="0" max="1" step="0.01" value="0.2"></label>
+          <label>Lower when life/maxAge under<input type="number" id="ppoCurDown" min="0" max="1" step="0.01" value="0.05"></label>
+          <label>Curriculum self-play (0/1)<input type="number" id="ppoCurSelf" min="0" max="1" step="1" value="0"></label>
+          <label>Self-play fraction start<input type="number" id="ppoCurSpStart" min="0" max="1" step="0.05" value="0.15"></label>
+          <label>Self-play fraction end<input type="number" id="ppoCurSpEnd" min="0" max="1" step="0.05" value="0.9"></label>
+        </div>
+        <h3 class="sub">Population (several policies mixed in the same worlds)</h3>
+        <div class="fields">
+          <label>Policies (1 = single policy)<input type="number" id="ppoPolicies" min="1" max="8" step="1" value="1"></label>
+          <label>World mixing<select id="ppoPopMix"><option value="0">balanced: every role in every world</option><option value="1">random role per slot</option><option value="2">archetypes: pure and mixed worlds</option></select></label>
+          <label>Pure world share (archetypes)<input type="number" id="ppoPopPure" min="0" max="1" step="0.05" value="0.25"></label>
+          <label>Re-roll roles every (iterations, 0 = never)<input type="number" id="ppoPopPeriod" min="0" step="1" value="0"></label>
+        </div>
+        <div id="popEditor" class="popeditor"></div>
+        <div class="row" style="margin-top:8px">
+          <button id="popApplyBtn" type="button" disabled>Apply roles and weights live</button>
+        </div>
+        <p class="hint">Each policy has its own network, Adam state, normalisation, league snapshots and reward weights over the game's reward channels (per-sample reward = sum of weight x channel). Role names, shares, weights and mixing apply live with the button; the number of policies applies on Reset. Population exports are a JSON array of {role, weights, genome} members.</p>
+        <p class="hint">Hidden units, rollout ticks, gamma, lambda, memory, bias, normalisation, leak time constants and clips apply on Reset; the rest apply live. Curriculum overrides the difficulty ramp and re-initialises worlds when the self-play share moves. Memory or normalisation exports are npc-brain/3 genomes (hidden-to-hidden edges, bias, per-node leak, folded input normalisation); the plain settings export npc-brain/2.</p>
+      </details>
+    </div>
+    <div class="card">
+      <details open>
+        <summary>Mode</summary>
+        <div class="fields">
+          <label class="wide">Trainer<select id="trainer"><option value="evolution">Evolution</option><option value="ppo">PPO (GPU policy gradient)</option></select></label>
+          <label class="check wide"><input type="checkbox" id="forceCpu"> Force CPU backend</label>
+          <label class="check wide"><input type="checkbox" id="headless"> Headless (no drawing)</label>
+        </div>
+        <p class="hint">Keys: <kbd>Space</kbd> start/pause, <kbd>[</kbd> <kbd>]</kbd> previous/next world, <kbd>H</kbd> headless.</p>
+      </details>
+    </div>
+    <div class="card">
+      <details open>
+        <summary>Tools</summary>
+        <div class="row">
+          <button id="benchBtn" type="button" disabled>Benchmark</button>
+          <button id="testBtn" type="button" disabled>Run tests</button>
+          <button id="csvBtn" type="button" disabled>Export curves CSV</button>
+        </div>
+        <div class="fields" style="margin-top:10px">
+          <label>Champions to export<input type="number" id="champCount" min="1" max="64" step="1" value="8"></label>
+          <span></span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="champBtn" type="button" disabled>Export champions JSON</button>
+          <button id="importBtn" type="button" disabled>Import genomes JSON</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="saveBtn" type="button" disabled>Checkpoint now</button>
+          <button id="restoreBtn" type="button" disabled>Restore checkpoint</button>
+        </div>
+        <p class="hint" id="ckptText">Checkpoint to IndexedDB every 60 s while running.</p>
+      </details>
+    </div>
+  </div>
+  <div class="stack">
+    <div class="card">
+      <details open id="deviceDetails">
+        <summary>Device</summary>
+        <div id="devicePanel" class="kv"></div>
+      </details>
+    </div>
+    <div class="views">
+      <div class="card">
+        <h2>World <span id="worldTitle"></span></h2>
+        <canvas id="worldCanvas" width="384" height="384" tabindex="0" aria-label="World view"></canvas>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--evo)"></i>evolved</span>
+          <span><i class="sw" style="background:var(--bot)"></i>scripted</span>
+          <span><i class="sw" style="background:var(--ok)"></i>hp</span>
+          <span><i class="sw" style="background:var(--gold)"></i>gold</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="watchBtn" type="button" disabled>Watch champions</button>
+          <label style="flex:1;min-width:120px">Watch speed <b id="watchSpeedText"></b><input type="range" id="watchSpeed" min="0" max="8" step="1" value="2"></label>
+        </div>
+        <p class="hint" id="watchInfo"></p>
+        <label style="margin-top:8px">World index<input type="range" id="worldRange" min="0" max="0" value="0"></label>
+        <div class="row" style="margin-top:6px">
+          <button id="prevWorld" type="button" aria-label="Previous world">&lt;</button>
+          <input type="number" id="worldPick" min="0" max="0" value="0" style="width:90px" aria-label="World index">
+          <button id="nextWorld" type="button" aria-label="Next world">&gt;</button>
+          <span class="hint" id="worldInfo"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>World scores <span class="hint" id="heatRange"></span></h2>
+        <canvas id="heatCanvas" width="64" height="64" tabindex="0" aria-label="Per-world score heatmap, click to select a world"></canvas>
+        <p class="hint">Click a cell to inspect that world.</p>
+      </div>
+    </div>
+    <div class="charts">
+      <div class="card chart"><h2>Evolved reward rate vs scripted bot</h2><canvas id="chartReward"></canvas></div>
+      <div class="card chart"><h2>Eval score vs scripted bot</h2><canvas id="chartEval"></canvas></div>
+      <div class="card chart"><h2>Ops per agent tick</h2><canvas id="chartOps"></canvas></div>
+      <div class="card chart"><h2>Mean synapses</h2><canvas id="chartEdges"></canvas></div>
+      <div class="card chart"><h2>Archive fitness</h2><canvas id="chartArchive"></canvas></div>
+      <div class="card chart" id="chartPopCard" hidden><h2>Pure-role benchmark vs bots, per role</h2><canvas id="chartPop"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Counters</h2>
+      <div class="statgrid" id="statGrid"></div>
+    </div>
+    <div class="card">
+      <h2>Output</h2>
+      <pre id="output" aria-live="polite">Ready.</pre>
+    </div>
+  </div>
+</div>
+<script type="module">
+__APP_SCRIPT__
+</script>
+</body>
+</html>

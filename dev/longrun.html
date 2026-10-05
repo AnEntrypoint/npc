@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>longrun</title>
+<pre id="live">starting</pre>
+<pre id="out"></pre>
+<script type="module">
+import { GpuBackend } from '../src/engine.js';
+import { GAMES } from '../src/games/index.js';
+
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'run';
+const number = (key, fallback) => (q.has(key) ? Number(q.get(key)) : fallback);
+const post = (path, body) => fetch('/api/' + path + '?name=' + encodeURIComponent(name), { method: 'POST', body });
+const log = (line) => { document.getElementById('out').textContent = line; return post('log', line); };
+
+const game = GAMES[q.get('game') || 'realm'];
+const minutes = number('minutes', 30);
+const backend = await GpuBackend.create(Object.assign({ game, worlds: number('worlds', 2048), islands: number('islands', 32), mutation: number('mutation', 1), lifeWeight: number('lifeWeight', 0.6), penaltyEnd: number('penaltyEnd', 0.02), penaltyRampTicks: number('ramp', 1500000), ticksPerDispatch: 0, maxEdges: number('maxEdges', 256), difficultyStart: number('difficultyStart', 100), difficultyEnd: number('difficultyEnd', 100), difficultyRampTicks: number('difficultyRamp', 300000) }, q.has('seed') ? { seed: number('seed', 1) } : {}));
+await log('created ' + JSON.stringify(backend.info.warnings) + ' worlds=' + backend.opts.worlds + ' seed=' + backend.opts.seed + ' game=' + game.id);
+const started = performance.now();
+let last = started;
+let lastPaint = started;
+let paintTick = 0;
+const prevGame = { train: {}, eval: {} };
+const gameDelta = (group, game) => Object.keys(game).map((k) => { const d = game[k] - (prevGame[group][k] || 0); prevGame[group][k] = game[k]; return k + '=' + d; }).join(',');
+while (performance.now() - started < minutes * 60000) {
+  await backend.step();
+  const now = performance.now();
+  if (now - lastPaint > 1000) {
+    const perSecond = (backend.tick - paintTick) / ((now - lastPaint) / 1000);
+    document.getElementById('live').textContent = 'running ' + ((now - started) / 1000).toFixed(0) + 's of ' + minutes * 60 + 's | tick ' + backend.tick + ' | ' + perSecond.toFixed(0) + ' ticks/s per world | ' + backend.opts.worlds + ' worlds | next report in ' + Math.max(0, number('logSeconds', 60) - (now - last) / 1000).toFixed(0) + 's';
+    lastPaint = now;
+    paintTick = backend.tick;
+  }
+  if (performance.now() - last > number('logSeconds', 60) * 1000) {
+    last = performance.now();
+    const s = await backend.readStats();
+    await log('base seed=' + backend.opts.seed + ' ' + ((performance.now() - started) / 1000).toFixed(0) + 's tick=' + s.tick + ' train=' + s.train.rewRate.toFixed(4) + ' base=' + s.train.baseRate.toFixed(4) + ' EVAL=' + s.eval.rewRate.toFixed(4) + ' evalBase=' + s.eval.baseRate.toFixed(4) + ' ratio=' + (s.eval.baseRate !== 0 ? s.eval.rewRate / s.eval.baseRate : NaN).toFixed(2) + ' life=' + s.train.meanLife.toFixed(0) + '/' + s.eval.meanLife.toFixed(0) + ' arch=' + s.archive.best.toFixed(1) + ' ops=' + s.train.opsPerTick.toFixed(1) + ' edges=' + s.train.edgesMean.toFixed(0) + ' K=' + s.ticksPerDispatch + ' G[' + gameDelta('train', s.train.game) + '] EG[' + gameDelta('eval', s.eval.game) + ']');
+  }
+}
+await post('save', JSON.stringify(await backend.exportChampions(8)));
+await log('done');
+</script>

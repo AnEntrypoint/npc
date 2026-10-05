@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>p19rl</title>
+<pre id="out">starting</pre>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'p19rl';
+const post = (body) => fetch('/api/log?name=' + encodeURIComponent(name), { method: 'POST', body });
+window.addEventListener('unhandledrejection', (e) => { post('ERR ' + String(e.reason && (e.reason.stack || e.reason.message || e.reason))); post('done'); });
+window.addEventListener('error', (e) => { post('ERR ' + e.message + ' ' + String(e.error && (e.error.stack || e.error))); post('done'); });
+const log = (line) => { document.getElementById('out').textContent = line; return post(line); };
+const { RlBackend } = await import('../src/rlengine.js');
+const { GAMES } = await import('../src/games/index.js');
+const { GAMES: BASE_GAMES } = await import('./base_p19/games/index.js');
+const list = (q.get('worlds') || '512,1024').split(',').map(Number);
+const rounds = Number(q.get('rounds') || 3);
+const iters = Number(q.get('iters') || 6);
+const impls = { base: BASE_GAMES.realm, new: GAMES.realm };
+if (q.get('nogame')) impls.nogame = GAMES.realm;
+const noObs = (code) => code.replace('    g_observe(t, tick);\n', '');
+const noStep = (code) => code.replace('    g_step(t, tick);\n', '');
+const tfs = { noObsBase: noObs, noStepBase: noStep, noObsNew: noObs, noStepNew: noStep };
+if (q.get('abl')) { impls.noObsBase = BASE_GAMES.realm; impls.noStepBase = BASE_GAMES.realm; impls.noObsNew = GAMES.realm; impls.noStepNew = GAMES.realm; }
+const noGame = (code) => code.replace('    g_observe(t, tick);\n', '').replace('    g_step(t, tick);\n', '');
+for (const worlds of list) {
+  const backs = {};
+  for (const k in impls) {
+    backs[k] = await RlBackend.create({ game: impls[k], worlds, seed: 1, difficultyStart: 100, difficultyEnd: 100, shaderTransform: k === 'nogame' ? noGame : tfs[k] });
+    for (let i = 0; i < 3; i++) await backs[k].iterate();
+  }
+  const best = {};
+  const keep = (key, v) => { best[key] = Math.min(best[key] === undefined ? Infinity : best[key], v); };
+  for (let r = 0; r < rounds; r++) {
+    for (const k in backs) {
+      const b = backs[k];
+      keep(k + '.rollout', await b.timeEncoded((e) => b.encodeRollout(e), 3));
+      const kern = await b.profileKernels();
+      for (const n in kern) keep(k + '.' + n, kern[n]);
+      for (let i = 0; i < iters; i++) keep(k + '.iter', (await b.iterate()).ms);
+    }
+  }
+  const T = backs.new.opts.rolloutTicks;
+  const rows = [];
+  for (const k in backs) {
+    const rollout = best[k + '.rollout'];
+    const iter = best[k + '.iter'];
+    rows.push(k + ' rolloutMs=' + rollout.toFixed(2) + ' worldTicks/s(rollout)=' + Math.round((worlds * T) / (rollout / 1000)) + ' gradMs=' + best[k + '.grad'].toFixed(2) + ' iterMs=' + iter.toFixed(1) + ' iter/min=' + (60000 / iter).toFixed(1) + ' worldTicks/s(iter)=' + Math.round((worlds * T) / (iter / 1000)));
+  }
+  await log('RL worlds=' + worlds + ' T=' + T + ' | ' + rows.join(' | ') + ' | nogame rollout=' + (best['nogame.rollout'] ? best['nogame.rollout'].toFixed(2) : 'n/a') + ' | abl[' + ['noObsBase','noStepBase','noObsNew','noStepNew'].map((k) => k + '=' + (best[k + '.rollout'] ? best[k + '.rollout'].toFixed(2) : 'n/a')).join(' ') + '] rollout speedup=' + (best['base.rollout'] / best['new.rollout']).toFixed(3) + ' iter speedup=' + (best['base.iter'] / best['new.iter']).toFixed(3));
+  for (const k in backs) await backs[k].dispose();
+}
+await log('done');
+</script>

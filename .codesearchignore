@@ -1,0 +1,19 @@
+# gm codesearch exclusions. Gitignore syntax, anchored at this file's directory.
+# Declared so an unscoped codesearch on this project stays inside its 45 s wall
+# budget instead of dying partway through the tree at exhaustive: false.
+#
+# 1. Headless Chrome profile / WebGPU cache trees: 6127 of 8771 listed files,
+#    all binary cache blobs (component_crx_cache, DawnWebGPUCache,
+#    GrShaderCache, Cache/Cache_Data). Never code.
+runs/chrome-*/
+runs/rl-profile/
+#
+# 2. Genome / brain exports ({"format":"npc-brain/2"|"npc-population-member/1"}).
+#    Extensionless JSON weight dumps; the population ones are ~1.3 MB, over the
+#    untyped-file size ceiling, so without this they are skipped for size and
+#    that skip alone keeps every reply at exhaustive: false.
+runs/*-base
+runs/*-base-best
+runs/*-base-crafter
+runs/*-base-generalist
+runs/*-base-hunter

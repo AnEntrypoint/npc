@@ -1,0 +1,5 @@
+[
+  { "name": "ppo-base", "page": "rllong", "minutes": 20, "seeds": [1, 2, 3], "params": { "game": "realm", "worlds": 512, "logSeconds": 60, "saveSeconds": 120 } },
+  { "name": "ppo-h142", "page": "rllong", "minutes": 20, "seeds": [1, 2, 3], "dependsOn": ["ppo-base"], "params": { "game": "realm", "worlds": 512, "hidden": 142, "logSeconds": 60, "saveSeconds": 120 } },
+  { "name": "ppo-pop3", "page": "rllong", "minutes": 20, "seeds": [1, 2], "dependsOn": ["ppo-base"], "params": { "game": "realm", "worlds": 512, "policies": 3, "popMix": 0, "logSeconds": 60, "saveSeconds": 120 } }
+]

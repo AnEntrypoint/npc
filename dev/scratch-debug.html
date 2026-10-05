@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>debug</title>
+<pre id="out"></pre>
+<script type="module">
+import { RlBackend } from '../src/rlengine.js';
+import { GAMES } from '../src/games/index.js';
+
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'debug';
+const post = (path, body) => fetch('/api/' + path + '?name=' + encodeURIComponent(name), { method: 'POST', body });
+const log = (line) => { document.getElementById('out').textContent += line + '\n'; return post('log', line); };
+window.addEventListener('error', (e) => post('log', 'ERR ' + e.message + ' ' + (e.error && e.error.stack)));
+window.addEventListener('unhandledrejection', (e) => post('log', 'ERR ' + (e.reason && (e.reason.stack || e.reason.message || e.reason))));
+
+const options = { game: GAMES[q.get('game') || 'realm'] };
+for (const [key, value] of q) if (key !== 'name' && key !== 'game' && key !== 'steps' && value !== '') options[key] = Number.isNaN(Number(value)) ? value : Number(value);
+const t = await RlBackend.create(options);
+await log('created worlds=' + t.opts.worlds + ' evalStart=' + t.evalStart + ' evalB=' + t.evalBStart + ' evalC=' + t.evalCStart + ' K=' + t.K);
+for (let i = 0; i < Number(q.get('steps') || 10); i++) await t.step();
+await t.flushStats();
+await log('window eval ' + JSON.stringify(Array.from(t.stats.window.eval)));
+await log('window train ' + JSON.stringify(Array.from(t.stats.window.train)));
+if (t.K > 1) {
+  await log('learner acc ' + JSON.stringify(t.popAcc.learner.map((g) => g.map((r) => Array.from(r)))));
+  await log('sub eval ' + JSON.stringify(t.popAcc.sub.map((a) => Array.from(a.window.eval))));
+}
+const s = await t.readStats();
+await log('stats ' + JSON.stringify({ tick: s.tick, passes: s.passes, train: s.train.rewRate, eval: s.eval.rewRate, base: s.eval.baseRate, life: s.eval.meanLife, pop: s.pop && s.pop.roles.map((r) => [r.name, r.train.rate, r.evalPure.rewRate, r.evalPure.baseRate, r.evalPure.meanLife, r.evalMixed.rate, r.headToHead.ratio]), mixed: s.pop && s.pop.mixed.rewRate }));
+await log('done');
+</script>

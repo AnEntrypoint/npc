@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>rllong</title>
+<pre id="live">starting</pre>
+<pre id="out"></pre>
+<script type="module">
+import { RlBackend } from '../src/rlengine.js';
+import { RL_DEFAULTS, RL_GAME_DEFAULTS, RL_CURRICULUM_DEFAULTS, RL_POP_DEFAULTS } from '../src/rl.js';
+import { DEFAULT_OPTS } from '../src/core.js';
+import { GAMES as REGISTERED } from '../src/games/index.js';
+import { BLOBSP } from './blobsp.js';
+
+const GAMES = Object.assign({ blobsp: BLOBSP }, REGISTERED);
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'rl';
+const number = (key, fallback) => (q.has(key) ? Number(q.get(key)) : fallback);
+const post = (path, body, suffix) => fetch('/api/' + path + '?name=' + encodeURIComponent(name + (suffix || '')), { method: 'POST', body });
+const log = (line) => { document.getElementById('out').textContent = line; return post('log', line); };
+window.addEventListener('error', (e) => post('log', 'ERR ' + e.message + ' ' + (e.error && e.error.stack)));
+window.addEventListener('unhandledrejection', (e) => post('log', 'ERR ' + (e.reason && (e.reason.stack || e.reason.message || e.reason))));
+
+const minutes = number('minutes', 10);
+const tickLimit = number('ticks', 0);
+const logSeconds = number('logSeconds', 30);
+const saveSeconds = number('saveSeconds', 120);
+const parseValue = (text) => (text !== '' && !Number.isNaN(Number(text)) ? Number(text) : text);
+const common = { game: q.get('game') || 'blob', worlds: number('worlds', 1024), seed: number('seed', 1), difficultyStart: number('difficultyStart', 100), difficultyEnd: number('difficultyEnd', 100), difficultyRampTicks: number('difficultyRamp', 300000) };
+for (const [key, value] of q) if ((key in RL_DEFAULTS || key in RL_CURRICULUM_DEFAULTS || key in DEFAULT_OPTS || key in RL_POP_DEFAULTS) && !(key in common) && value !== '') common[key] = parseValue(value);
+for (const [key, value] of Object.entries(RL_GAME_DEFAULTS[common.game] || {})) if (!q.has(key)) common[key] = value;
+const specs = (q.get('variants') || 'base:').split(';').filter(Boolean).map((spec) => {
+  const cut = spec.indexOf(':');
+  const overrides = {};
+  for (const pair of spec.slice(cut + 1).split(',').filter(Boolean)) {
+    const eq = pair.indexOf('=');
+    overrides[pair.slice(0, eq)] = parseValue(pair.slice(eq + 1));
+  }
+  return { label: spec.slice(0, cut), options: Object.assign({}, common, overrides) };
+});
+
+const forwardLoop = 'for (var j = 0u; j < NIN; j++) { pre += theta[TB + OFF_W1 + j * HID + i] * xs[e * XS + j]; }';
+const dw1Loop = 'for (var e = 0u; e < cnt; e++) { s += dzs[e * HSS + ii] * xs[e * XS + jj]; }';
+const ablations = {
+  noDw1: (code) => code.replace(dw1Loop, ''),
+  noForward: (code) => code.replace(forwardLoop, ''),
+  noBoth: (code) => code.replace(dw1Loop, '').replace(forwardLoop, ''),
+  noPolicyForward: (code) => code
+    .replace('for (var j = 0u; j < NIN; j++) { acc += theta[tb + OFF_W1 + j * HID + i] * xr[j]; }', '')
+    .replace('for (var j = 0u; j < NIN; j++) { acc += theta[tb + OFF_W1 + j * HID + i] * obs_get(ln, j); }', ''),
+};
+const runs = [];
+for (const spec of specs) {
+  const options = Object.assign({}, spec.options, { game: GAMES[spec.options.game] });
+  if (typeof options.ablate === 'string') options.shaderTransform = ablations[options.ablate];
+  const backend = await RlBackend.create(options);
+  runs.push({ label: spec.label, backend, prevGame: {}, prevSelfPlay: {}, lastTick: 0, lastLog: performance.now(), lastSave: performance.now() });
+}
+await log('created ' + runs.map((r) => r.label + ':worlds=' + r.backend.opts.worlds + ',hidden=' + r.backend.opts.hidden + ',params=' + r.backend.params.count).join(' ') + ' warnings=' + JSON.stringify(runs.map((r) => r.backend.info.warnings)) + ' workgroupBytes=' + runs[0].backend.layout.workgroupBytes + ' seed=' + common.seed + ' game=' + common.game);
+
+if (q.has('tests')) {
+  const results = await runs[0].backend.runTests();
+  for (const r of results) await log((r.ok ? 'PASS ' : 'FAIL ') + r.name + ' (' + r.ms.toFixed(0) + ' ms): ' + r.detail);
+  await log('tests done ' + results.filter((r) => r.ok).length + '/' + results.length);
+} else if (q.has('profile')) {
+  for (const run of runs) {
+    await run.backend.iterate();
+    const kernels = await run.backend.profileKernels();
+    const iteration = await run.backend.iterate();
+    await log('profile ' + run.label + ' iterationMs=' + iteration.ms.toFixed(1) + ' ' + JSON.stringify(kernels));
+    const stamps = await run.backend.profileIteration();
+    if (stamps) await log('timestamps ' + run.label + ' ' + JSON.stringify(Object.fromEntries(Object.entries(stamps).map(([k, v]) => [k, Number(v.toFixed(2))]))));
+  }
+  await log('profile done');
+} else if (q.has('bench')) {
+  const result = await runs[0].backend.benchmark();
+  for (const row of result.rows) await log('bench ' + JSON.stringify(row));
+  await log('bench done');
+} else {
+  const started = performance.now();
+  let lastPaint = started;
+  const gameDelta = (current, previous) => Object.keys(current).map((k) => { const d = current[k] - (previous[k] || 0); previous[k] = current[k]; return k + '=' + d; }).join(',');
+  const save = async (run) => {
+    const champions = await run.backend.exportChampions(2);
+    if (run.backend.K > 1) {
+      await post('save', JSON.stringify(champions), '-' + run.label);
+      for (const member of champions) await post('save', JSON.stringify(member.genome), '-' + run.label + '-' + member.role);
+      if (run.backend.bestTheta) await post('save', JSON.stringify(await run.backend.exportPopulation(true)), '-' + run.label + '-best');
+      return;
+    }
+    await post('save', JSON.stringify(champions[0]), '-' + run.label);
+    if (champions[1]) await post('save', JSON.stringify(champions[1]), '-' + run.label + '-best');
+  };
+  for (const run of runs) run.spent = 0;
+  while (performance.now() - started < minutes * 60000 && (!tickLimit || runs.some((r) => r.backend.tick < tickLimit))) {
+    {
+      const pool = tickLimit ? runs.filter((r) => r.backend.tick < tickLimit) : runs;
+      const run = tickLimit ? pool.reduce((least, r) => (r.backend.tick < least.backend.tick ? r : least), pool[0]) : pool.reduce((least, r) => (r.spent < least.spent ? r : least), pool[0]);
+      const before = performance.now();
+      await run.backend.step();
+      run.spent += performance.now() - before;
+      const now = performance.now();
+      if (now - run.lastLog > logSeconds * 1000) {
+        const s = await run.backend.readStats();
+        const d = s.ppo;
+        const perSecond = ((run.backend.tick - run.lastTick) * run.backend.opts.worlds) / ((performance.now() - run.lastLog) / 1000);
+        run.lastTick = run.backend.tick;
+        run.lastLog = performance.now();
+        const ratio = s.eval.baseRate !== 0 ? s.eval.rewRate / s.eval.baseRate : NaN;
+        const league = s.league;
+        const f5 = (v) => (Number.isFinite(v) ? v.toFixed(5) : 'nan');
+        const popText = s.pop ? ' POP[' + s.pop.roles.map((r) => r.name + ':trainRate=' + f5(r.train.rate) + ',evalRate=' + f5(r.evalPure.rewRate) + ',evalBase=' + f5(r.evalPure.baseRate) + ',ratio=' + (r.evalPure.baseRate !== 0 ? (r.evalPure.rewRate / r.evalPure.baseRate).toFixed(2) : 'nan') + ',life=' + r.evalPure.meanLife.toFixed(0) + ',mixRate=' + f5(r.evalMixed.rate) + ',h2h=' + r.headToHead.ratio.toFixed(2) + ',w=' + r.weights.map((w) => +w.toFixed(2)).join('/') + ',ent=' + r.diag.entropy.toFixed(3) + ',kl=' + r.diag.kl.toExponential(1)).concat(['MIX:evalRate=' + f5(s.pop.mixed.rewRate) + ',evalBase=' + f5(s.pop.mixed.baseRate) + ',ratio=' + (s.pop.mixed.baseRate !== 0 ? (s.pop.mixed.rewRate / s.pop.mixed.baseRate).toFixed(2) : 'nan') + ',life=' + s.pop.mixed.meanLife.toFixed(0) + ',mean=' + f5(s.pop.evalMean) + ',best=' + f5(s.pop.evalBest) + ',bestRole=' + s.pop.evalBestRole]).join(';') + ']' : '';
+        const leagueText = league ? ' H2H[latest=' + league.headToHead.latestRate.toFixed(5) + ',older=' + league.headToHead.olderRate.toFixed(5) + ',ratio=' + league.headToHead.ratio.toFixed(2) + ',refAge=' + league.headToHead.referenceAge + ',pool=' + league.pool.valid + '] SP[rew=' + league.selfPlay.rewRate.toFixed(5) + ',life=' + league.selfPlay.meanLife.toFixed(0) + ',G=' + gameDelta(league.selfPlay.game, run.prevSelfPlay) + ']' : '';
+        await log(run.label + ' seed=' + run.backend.opts.seed + ' ' + (run.spent / 1000).toFixed(0) + 's it=' + s.passes + ' tick=' + s.tick + ' wt/s=' + perSecond.toFixed(0) + ' train=' + s.train.rewRate.toFixed(5) + ' base=' + s.train.baseRate.toFixed(5) + ' EVAL=' + s.eval.rewRate.toFixed(5) + ' evalBase=' + s.eval.baseRate.toFixed(5) + ' ratio=' + ratio.toFixed(2) + ' life=' + s.train.meanLife.toFixed(0) + '/' + s.eval.meanLife.toFixed(0) + ' ent=' + d.entropy.toFixed(3) + ' kl=' + d.kl.toExponential(1) + ' clip=' + d.clipFraction.toFixed(2) + ' vl=' + d.valueLoss.toFixed(3) + ' gn=' + d.gradNorm.toFixed(2) + ' rs=' + d.rewardScale.toFixed(2) + ' EG[' + gameDelta(s.eval.game, run.prevGame) + ']' + leagueText + popText + (s.curriculum ? ' CUR[d=' + s.curriculum.difficulty + ',sp=' + s.curriculum.selfPlay.toFixed(2) + ',life=' + Math.round(s.curriculum.life || 0) + (s.curriculum.note ? ',' + s.curriculum.note : '') + ']' : ''));
+      }
+      if (performance.now() - run.lastSave > saveSeconds * 1000) {
+        run.lastSave = performance.now();
+        await save(run);
+      }
+    }
+    const now = performance.now();
+    if (now - lastPaint > 1000) {
+      document.getElementById('live').textContent = 'running ' + ((now - started) / 1000).toFixed(0) + 's of ' + minutes * 60 + 's | ' + runs.map((r) => r.label + ':' + r.backend.passes).join(' ');
+      lastPaint = now;
+    }
+  }
+  for (const run of runs) await save(run);
+  await log('done');
+}
+</script>

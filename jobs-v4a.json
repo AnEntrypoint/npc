@@ -1,0 +1,5 @@
+[
+  { "name": "v4-ta", "page": "ab", "params": { "game": "realm", "tests": 1, "variants": "x:" }, "minutes": 4 },
+  { "name": "v4-tr", "page": "rllong", "params": { "game": "realm", "worlds": 64, "tests": 1 }, "minutes": 6 },
+  { "name": "v4-r7", "page": "rllong", "minutes": 14, "params": { "game": "realm", "worlds": 512, "gamma": 0.997, "lambda": 0.97, "logSeconds": 90, "saveSeconds": 150 } }
+]

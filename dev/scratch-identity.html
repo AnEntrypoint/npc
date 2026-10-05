@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>identity</title>
+<pre id="out"></pre>
+<script type="module">
+import { RlBackend as OldBackend } from './scratch-orig/rlengine.js';
+import { RlBackend as NewBackend } from '../src/rlengine.js';
+import { GAMES } from '../src/games/index.js';
+import { RL_CTL } from '../src/rlshader.js';
+import { rlInitTheta } from '../src/rl.js';
+
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'identity';
+const post = (path, body) => fetch('/api/' + path + '?name=' + encodeURIComponent(name), { method: 'POST', body });
+const log = (line) => { document.getElementById('out').textContent += line + '\n'; return post('log', line); };
+window.addEventListener('error', (e) => post('log', 'ERR ' + e.message + ' ' + (e.error && e.error.stack)));
+window.addEventListener('unhandledrejection', (e) => post('log', 'ERR ' + (e.reason && (e.reason.stack || e.reason.message || e.reason))));
+
+const base = { game: GAMES[q.get('game') || 'realm'], league: 0, worlds: 32, hidden: 32, rolloutTicks: 16, gradGroups: 16, seed: 5, poolSize: 3, snapshotEvery: 2, leaguePeriod: 1, referenceAge: 2 };
+const extra = {};
+for (const [key, value] of q) if (key !== 'name' && key !== 'game' && value !== '' && !Number.isNaN(Number(value))) extra[key] = Number(value);
+const options = Object.assign({}, base, extra);
+const iterations = Number(q.get('iterations') || 8);
+
+const same = (a, b, count) => {
+  let diff = 0;
+  let worst = 0;
+  for (let i = 0; i < count; i++) {
+    if (!Object.is(a[i], b[i])) {
+      diff++;
+      worst = Math.max(worst, Math.abs(a[i] - b[i]));
+    }
+  }
+  return { diff, worst };
+};
+
+const old = await OldBackend.create(Object.assign({}, options));
+const single = await NewBackend.create(Object.assign({}, options));
+const duo = await NewBackend.create(Object.assign({}, options, { policies: 2, popFractions: '1/0' }));
+await log('created old worlds=' + old.opts.worlds + ' new worlds=' + single.opts.worlds + ' duo worlds=' + duo.opts.worlds);
+for (let i = 0; i < iterations; i++) {
+  await old.iterate();
+  await single.iterate();
+  await duo.iterate();
+}
+const count = old.params.count;
+const read = async (b) => ({ theta: await b.readFloats('theta', 0, b.layout.thetaFloats), opt: await b.readFloats('opt', 0, b.layout.optFloats), rec: await b.readFloats('rec', 0, b.layout.recFloats), obs: await b.readFloats('obs', 0, b.layout.obsFloats) });
+const a = await read(old);
+const b = await read(single);
+const c = await read(duo);
+const optOld = 2 * count + RL_CTL.SIZE;
+const report = (label, x, y, thetaCount, optCount, optStrideX, optStrideY) => {
+  const t = same(x.theta, y.theta, thetaCount);
+  const o = same(x.opt, y.opt, optCount);
+  const r = same(x.rec, y.rec, Math.min(x.rec.length, y.rec.length));
+  const ob = same(x.obs, y.obs, Math.min(x.obs.length, y.obs.length));
+  return label + ' theta diff=' + t.diff + ' opt diff=' + o.diff + ' rec diff=' + r.diff + ' (worst ' + r.worst + ') obs diff=' + ob.diff;
+};
+await log(report('K1 vs old (all snapshots included)', a, b, old.layout.thetaFloats, optOld));
+await log(report('K2[1,0] policy0 vs old live+opt', a, c, count, optOld));
+for (let k = 0; k < 3; k++) {
+  const d = same(a.theta.subarray((1 + k) * count, (2 + k) * count), c.theta.subarray((2 + k) * count, (3 + k) * count), count);
+  const d1 = same(b.theta.subarray((1 + k) * count, (2 + k) * count), a.theta.subarray((1 + k) * count, (2 + k) * count), count);
+  await log('snapshot slot ' + k + ': old vs K2 diff=' + d.diff + ' old vs K1 diff=' + d1.diff + ' pool K2 p0 ' + JSON.stringify(duo.pools[0]) + ' old ' + JSON.stringify(old.pool));
+}
+for (let i = 0; i < 8; i++) {
+  const row = [];
+  for (let k = 0; k < 4; k++) row.push(same(c.theta.subarray(i * count, (i + 1) * count), a.theta.subarray(k * count, (k + 1) * count), count).diff);
+  const initP1 = rlInitTheta(duo.params, (duo.opts.seed + 7919) * 2654435761, duo.opts);
+  row.push(same(c.theta.subarray(i * count, (i + 1) * count), initP1, count).diff);
+  await log('K2 slice ' + i + ' diff vs old slices 0..3 and p1 init: ' + row.join(' '));
+}
+const so = await old.readStats();
+await log('old stats ' + JSON.stringify(so.ppo) + ' train ' + so.train.rewRate);
+const sn = await duo.readStats();
+await log('duo stats ' + JSON.stringify(sn.ppo) + ' pop ' + JSON.stringify(sn.pop && sn.pop.roles.map((r) => [r.name, r.train.rate, r.evalPure.rewRate])));
+const norm = (x, i) => { let n = 0; let z = 0; for (let k = i * count; k < (i + 1) * count; k++) { n += Math.abs(x[k]); if (x[k] === 0) z++; } return n.toFixed(4) + ' zeros=' + z; };
+for (let i = 0; i < 4; i++) await log('old slice ' + i + ' |theta|=' + norm(a.theta, i));
+for (let i = 0; i < 8; i++) await log('K2 slice ' + i + ' |theta|=' + norm(c.theta, i));
+const init = rlInitTheta(duo.params, (duo.opts.seed + 7919) * 2654435761, duo.opts);
+let unchanged = 0;
+for (let i = 0; i < count; i++) if (Object.is(init[i], c.theta[count + i])) unchanged++;
+await log('K2 policy 1 theta identical to its initial values: ' + unchanged + '/' + count);
+await log('done');
+</script>

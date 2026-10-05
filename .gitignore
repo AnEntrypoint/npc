@@ -1,0 +1,18 @@
+# local state, never published
+.gm/
+.gm-pre-soa*.wgsl
+.agentplug-kv/
+.agentplug*/
+runs/**
+!runs/NEXT-ROUNDS.md
+runs/.queue-inbox/
+runs/queue-state.json
+runs/.gpu.lock
+runs/chrome-*/
+runs/chrome-shared/
+runs/*.log
+runs/.watch-*.cjs
+runs/.r*.cjs
+node_modules/
+.DS_Store
+*.tmp

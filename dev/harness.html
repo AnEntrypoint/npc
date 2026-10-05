@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>harness</title>
+<pre id="out">loading</pre>
+<script type="module">
+import { GpuBackend, getDeviceContext } from '../src/engine.js';
+import { GAMES } from '../src/games/index.js';
+window.T = { GpuBackend, GAMES, getDeviceContext };
+document.getElementById('out').textContent = 'ready';
+</script>

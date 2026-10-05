@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ab</title>
+<pre id="out">starting</pre>
+<script type="module">
+import { GpuBackend } from '../src/engine.js';
+import { GAMES } from '../src/games/index.js';
+import { REALM as REALM2 } from './legacy/realm2.js';
+import { REALM as REALM3A } from './legacy/realm3a.js';
+import { REALM as REALM31 } from './legacy/realm31.js';
+import { REALM as REALM33 } from './legacy/realm33.js';
+
+const ALL_GAMES = Object.assign({ realm2: REALM2, realm3a: REALM3A, realm31: REALM31, realm33: REALM33 }, GAMES);
+
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'ab';
+const number = (key, fallback) => (q.has(key) ? Number(q.get(key)) : fallback);
+const post = (path, body) => fetch('/api/' + path + '?name=' + encodeURIComponent(name), { method: 'POST', body });
+const log = (line) => { document.getElementById('out').textContent = line; return post('log', line); };
+
+window.addEventListener('error', (e) => post('log', 'ERR ' + e.message + ' ' + (e.error && e.error.stack)));
+window.addEventListener('unhandledrejection', (e) => post('log', 'ERR ' + (e.reason && (e.reason.stack || e.reason.message || e.reason))));
+const game = ALL_GAMES[q.get('game') || 'realm'];
+const minutes = number('minutes', 20);
+const logTicks = number('logTicks', 3000);
+const saveEvery = number('saveEvery', 10);
+const common = { game, worlds: number('worlds', 512), islands: number('islands', 8), mutation: number('mutation', 2.5), lifeWeight: number('lifeWeight', 0.8), penaltyEnd: number('penaltyEnd', 0), penaltyRampTicks: number('ramp', 30000), maxEdges: number('maxEdges', 128), difficultyStart: number('difficultyStart', 100), difficultyEnd: number('difficultyEnd', 100), difficultyRampTicks: number('difficultyRamp', 20000), ticksPerDispatch: number('k', 4), seed: number('seed', 12345) };
+const parseValue = (text) => (text !== '' && !Number.isNaN(Number(text)) ? Number(text) : text);
+const specs = (q.get('variants') || 'base:').split(';').filter(Boolean).map((spec) => {
+  const cut = spec.indexOf(':');
+  const label = spec.slice(0, cut);
+  const overrides = {};
+  for (const pair of spec.slice(cut + 1).split(',').filter(Boolean)) {
+    const eq = pair.indexOf('=');
+    overrides[pair.slice(0, eq)] = parseValue(pair.slice(eq + 1));
+  }
+  if (typeof overrides.game === 'string') overrides.game = ALL_GAMES[overrides.game];
+  return { label, overrides };
+});
+
+if (q.has('tests')) {
+  const spec = specs[0];
+  const backend = await GpuBackend.create(Object.assign({}, common, { worlds: 16, islands: 2 }, spec.overrides));
+  await log('backend created ' + backend.opts.worlds);
+  const results = await backend.runTests();
+  for (const r of results) await log((r.ok ? 'PASS ' : 'FAIL ') + r.name + ': ' + r.detail);
+  await log('tests done ' + results.filter((r) => r.ok).length + '/' + results.length);
+  await backend.dispose();
+  throw new Error('tests finished');
+}
+
+const runs = [];
+for (const spec of specs) {
+  const backend = await GpuBackend.create(Object.assign({}, common, spec.overrides));
+  runs.push({ label: spec.label, backend, nextLog: logTicks, prevGame: { train: {}, eval: {} } });
+}
+await log('created ' + runs.map((r) => r.label + ':' + r.backend.opts.worlds).join(' ') + ' common=' + JSON.stringify(Object.assign({}, common, { game: game.id })) + ' games=' + runs.map((r) => r.backend.game.id).join(','));
+
+const gameDelta = (run, group, stats) => Object.keys(stats).map((k) => { const d = stats[k] - (run.prevGame[group][k] || 0); run.prevGame[group][k] = stats[k]; return k + '=' + d; }).join(',');
+const started = performance.now();
+let stop = false;
+while (!stop && performance.now() - started < minutes * 60000) {
+  await Promise.all(runs.map((run) => run.backend.step()));
+  for (const run of runs) {
+    if (run.backend.tick < run.nextLog) continue;
+    run.nextLog += logTicks;
+    run.logCount = (run.logCount || 0) + 1;
+    if (run.logCount % saveEvery === 0) await fetch('/api/save?name=' + encodeURIComponent(name + '-' + run.label), { method: 'POST', body: JSON.stringify(await run.backend.exportChampions(8)) });
+    const s = await run.backend.readStats();
+    await log(run.label + ' t=' + ((performance.now() - started) / 1000).toFixed(0) + 's tick=' + s.tick + ' train=' + s.train.rewRate.toFixed(5) + ' EVAL=' + s.eval.rewRate.toFixed(5) + ' evalBase=' + s.eval.baseRate.toFixed(5) + ' life=' + s.train.meanLife.toFixed(0) + '/' + s.eval.meanLife.toFixed(0) + ' arch=' + s.archive.best.toFixed(2) + ' edges=' + s.train.edgesMean.toFixed(0) + ' ops=' + s.train.opsPerTick.toFixed(1) + ' diff=' + (run.backend.adaptiveLevel === undefined ? '' : run.backend.adaptiveLevel) + ' EG[' + gameDelta(run, 'eval', s.eval.game) + ']');
+  }
+}
+for (const run of runs) await fetch('/api/save?name=' + encodeURIComponent(name + '-' + run.label), { method: 'POST', body: JSON.stringify(await run.backend.exportChampions(8)) });
+await log('done');
+</script>

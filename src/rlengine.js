@@ -1,5 +1,5 @@
 import { getDeviceContext } from './engine.js';
-import { DEFAULT_OPTS, StatsAccumulator, NSTATS, STAT, REWARD_SCALE, validateGame, evalWorldCount, difficultyAt, genomeFromJSON, Brain, Rng, evoConfig, mix } from './core.js';
+import { DEFAULT_OPTS, StatsAccumulator, NSTATS, WORLD_HDR_WORDS, STAT, REWARD_SCALE, validateGame, evalWorldCount, difficultyAt, genomeFromJSON, Brain, Rng, evoConfig, mix } from './core.js';
 import { RL_DEFAULTS, RL_CURRICULUM_DEFAULTS, RL_POP_DEFAULTS, RL_POP_MIX_NAMES, RlCurriculum, rlLayout, rlRecordLayout, rlInitTheta, rlThetaToGenome, rlGenomeToTheta, rlHiddenActivations, rlPolicyStep, rlPolicyMean, rlValueOf, rlLogProb, rlGae, rlLossAndGrad, rlAdamStep, rlObgdStep, rlBoundedStep, rlOptimizerStep, rlGradientCheck, rlNormMerge, rlPopConfig, rlPopPolicyOf, rlWeightedReward } from './rl.js';
 import { buildRlShader, rlShaderLayout, rlFeatures, rlLanePermute, rlRecPermute, RL_ENTRIES, RL_UNIFORM_WORDS, RL_CTL, RL_LANE, RL_ROLE, RL_STATS, RL_POP_GROUP, RL_POP_STAT_GROUPS, RL_POP_WEIGHT_SLOTS } from './rlshader.js';
 
@@ -7,7 +7,7 @@ const RL_STATS_FLUSH_ITERATIONS = 8;
 const RL_ERROR_SCOPE_EVERY = 16;
 const RL_STORAGE_BINDINGS = 8;
 const RL_BOT_FREE = { curriculum: 1, curriculumSelfPlay: 1, curriculumSelfPlayStart: 1, curriculumSelfPlayEnd: 1, curriculumDifficultyStart: 100, curriculumLifeUp: 2, curriculumLifeDown: -1 };
-const RL_TRACKED_KEYS = ['hidden', 'rolloutTicks', 'gamma', 'lambda', 'clip', 'lr', 'lrEnd', 'lrDecayIterations', 'entropy', 'entropyEnd', 'valueCoef', 'epochs', 'minibatches', 'maxGrad', 'sigmaInit', 'sigmaMin', 'sigmaMax', 'weightMax', 'rewardScale', 'adaptScale', 'lifeCapScale', 'gradGroups', 'tileEntries', 'league', 'leagueFraction', 'leagueSlotFraction', 'poolSize', 'snapshotEvery', 'leaguePeriod', 'latestBias', 'leagueEvalFraction', 'referenceAge', 'blockGrad', 'curriculum', 'curriculumMetric', 'curriculumDifficultyStart', 'curriculumDifficultyStep', 'curriculumLifeUp', 'curriculumLifeDown', 'curriculumPatience', 'curriculumSmoothing', 'curriculumSelfPlay', 'curriculumSelfPlayStart', 'curriculumSelfPlayEnd', 'curriculumRatioLow', 'curriculumRatioHigh', 'bias', 'recurrent', 'obsNorm', 'recurrentInit', 'leakInit', 'leakTauMax', 'learnLeak', 'rewardClip', 'valueClip', 'obsNormFloor', 'obsNormCap', 'channelCaps', 'popWeights', 'popWeightsEnd', 'hostPipeline', 'soa', 'fwdDirect', 'optimizer', 'obgdBudget'];
+const RL_TRACKED_KEYS = ['hidden', 'rolloutTicks', 'gamma', 'lambda', 'clip', 'lr', 'lrEnd', 'lrDecayIterations', 'entropy', 'entropyEnd', 'valueCoef', 'epochs', 'minibatches', 'maxGrad', 'sigmaInit', 'sigmaMin', 'sigmaMax', 'weightMax', 'rewardScale', 'adaptScale', 'lifeCapScale', 'gradGroups', 'tileEntries', 'league', 'leagueFraction', 'leagueSlotFraction', 'poolSize', 'snapshotEvery', 'leaguePeriod', 'latestBias', 'leagueEvalFraction', 'referenceAge', 'blockGrad', 'curriculum', 'curriculumMetric', 'curriculumDifficultyStart', 'curriculumDifficultyStep', 'curriculumLifeUp', 'curriculumLifeDown', 'curriculumPatience', 'curriculumSmoothing', 'curriculumSelfPlay', 'curriculumSelfPlayStart', 'curriculumSelfPlayEnd', 'curriculumRatioLow', 'curriculumRatioHigh', 'bias', 'recurrent', 'obsNorm', 'recurrentInit', 'leakInit', 'leakTauMax', 'learnLeak', 'rewardClip', 'valueClip', 'obsNormFloor', 'obsNormCap', 'channelCaps', 'popWeights', 'popWeightsEnd', 'hostPipeline', 'soa', 'fwdDirect', 'optimizer', 'obgdBudget', 'inputMask', 'maskEvery', 'maskFixed'];
 
 export function rlSlotCount(game) {
   return game.maxLearners || game.learners;
@@ -22,7 +22,7 @@ export function rlWorldCapacity(ctx, game, opts) {
   const partFloats = Math.max(1, Math.floor(64 / learners)) * (nOut + 1);
   const obsPerLearner = (opts.rolloutTicks + 1) * nIn + (features.recurrent ? opts.hidden : 0);
   const perTrainWorld = [learners * obsPerLearner * 4, learners * opts.rolloutTicks * layout.recStride * 4];
-  const perWorld = [(24 + game.worldWords) * 4, learners * (RL_LANE.HEADER + (features.recurrent ? 2 : 1) * opts.hidden + nIn + partFloats) * 4];
+  const perWorld = [(WORLD_HDR_WORDS + game.worldWords) * 4, learners * (RL_LANE.HEADER + (features.recurrent ? 2 : 1) * opts.hidden + nIn + partFloats) * 4];
   const trainCap = Math.min(...perTrainWorld.map((bytes) => limit / bytes));
   const allCap = Math.min(...perWorld.map((bytes) => limit / bytes));
   const trainShare = 1 - opts.evalFraction - (opts.league ? 2 * opts.leagueEvalFraction : 0);
@@ -114,7 +114,7 @@ export class RlBackend {
 
   shaderConfig() {
     const o = this.opts;
-    return { policies: this.K, worlds: o.worlds, evalStart: this.evalStart, evalBStart: this.evalBStart, evalCStart: this.evalCStart, poolSize: this.poolSize, hidden: o.hidden, rolloutTicks: o.rolloutTicks, gradGroups: o.gradGroups, tileEntries: o.tileEntries, lifeCapScale: o.lifeCapScale, blockGrad: o.blockGrad, minibatches: o.minibatches, bias: o.bias, recurrent: o.recurrent, obsNorm: o.obsNorm, learnLeak: o.learnLeak, rewardClip: o.rewardClip, valueClip: o.valueClip, advClipMult: o.advClipMult, advClipBeta: o.advClipBeta, entropySign: o.entropySign, obsNormFloor: o.obsNormFloor, obsNormCap: o.obsNormCap, channelCaps: o.channelCaps, optimizer: o.optimizer, obgdBudget: o.obgdBudget };
+    return { policies: this.K, worlds: o.worlds, evalStart: this.evalStart, evalBStart: this.evalBStart, evalCStart: this.evalCStart, poolSize: this.poolSize, hidden: o.hidden, rolloutTicks: o.rolloutTicks, gradGroups: o.gradGroups, tileEntries: o.tileEntries, lifeCapScale: o.lifeCapScale, blockGrad: o.blockGrad, minibatches: o.minibatches, bias: o.bias, recurrent: o.recurrent, obsNorm: o.obsNorm, learnLeak: o.learnLeak, rewardClip: o.rewardClip, valueClip: o.valueClip, advClipMult: o.advClipMult, advClipBeta: o.advClipBeta, entropySign: o.entropySign, obsNormFloor: o.obsNormFloor, obsNormCap: o.obsNormCap, channelCaps: o.channelCaps, optimizer: o.optimizer, obgdBudget: o.obgdBudget, fwdDirect: o.fwdDirect, soa: o.soa, styleGate: o.styleGate, styleGateEval: o.styleGateEval };
   }
 
   makeBuffer(name, bytes, usage) {
@@ -293,6 +293,8 @@ export class RlBackend {
     u[25] = o.league ? 1 : 0;
     u[26] = this.curriculum.spOn ? 1 : 0;
     f[27] = this.curriculum.selfPlay;
+    u[28] = o.styleGate | 0;
+    u[29] = o.styleGateEval | 0;
     u[33] = this.K;
     u[34] = this.pop.mix;
     u[35] = this.pop.period > 0 ? Math.floor(this.passes / this.pop.period) : 0;
@@ -471,6 +473,7 @@ export class RlBackend {
   async step() {
     const result = await this.iterate();
     if (this.iterationsSinceFlush >= RL_STATS_FLUSH_ITERATIONS) await this.flushStats();
+    if (this.opts.inputMask > 0 && this.passes > 0 && this.passes % Math.max(1, this.opts.maskEvery) === 0) await this.applyInputMask();
     return result;
   }
 
@@ -516,7 +519,7 @@ export class RlBackend {
       for (let p = 0; p < K; p++) for (let s = 0; s < 4; s++) this.popAcc.learner[g][p][s] += rows[base + (g * K + p) * 4 + s];
     }
     const subBase = base + RL_POP_STAT_GROUPS * K * 4;
-    for (let sg = 0; sg <= K; sg++) this.popAcc.sub[sg].add('eval', Float64Array.from(rows.subarray(subBase + sg * 16, subBase + (sg + 1) * 16)), this.slots);
+    for (let sg = 0; sg <= K; sg++) this.popAcc.sub[sg].add('eval', Float64Array.from(rows.subarray(subBase + sg * NSTATS, subBase + (sg + 1) * NSTATS)), this.slots);
   }
 
   popSummary() {
@@ -575,6 +578,58 @@ export class RlBackend {
     this.iterationsSinceFlush = 0;
   }
 
+  async applyInputMask() {
+    const P = this.params;
+    const nIn = P.nIn;
+    const hidden = P.hidden;
+    const stride = this.layout.optStride;
+    if (!this.maskSaved) this.maskSaved = new Map();
+    const salience = new Float64Array(nIn);
+    for (let p = 0; p < this.K; p++) {
+      const m = await this.readFloats('opt', p * stride + P.w1, nIn * hidden);
+      for (let j = 0; j < nIn; j++) {
+        let s = 0;
+        for (let i = 0; i < hidden; i++) s += Math.abs(m[j * hidden + i]);
+        salience[j] += s;
+      }
+    }
+    const order = Array.from({ length: nIn }, (_, j) => j).sort((a, b) => salience[a] - salience[b]);
+    const keep = Math.max(1, nIn - Math.min(this.opts.inputMask, nIn - 1));
+    let drop = new Set(order.slice(0, nIn - keep));
+    const fixed = String(this.opts.maskFixed || '');
+    if (fixed) {
+      drop = new Set();
+      for (const part of fixed.split(',')) {
+        const ends = part.split('-').map(Number);
+        for (let j = ends[0]; j <= (ends.length > 1 ? ends[1] : ends[0]); j++) if (j >= 0 && j < nIn) drop.add(j);
+      }
+    }
+    const zeros = new Float32Array(hidden);
+    for (const j of drop) {
+      if (!this.maskSaved.has(j)) this.maskSaved.set(j, await this.readFloats('theta', P.w1 + j * hidden, hidden));
+      for (let p = 0; p < this.K; p++) {
+        const at = P.w1 + j * hidden;
+        this.device.queue.writeBuffer(this.buffers.theta, (p * P.count + at) * 4, zeros);
+        this.device.queue.writeBuffer(this.buffers.opt, (p * stride + at) * 4, zeros);
+        this.device.queue.writeBuffer(this.buffers.opt, (p * stride + P.count + at) * 4, zeros);
+      }
+    }
+    for (const [j, row] of Array.from(this.maskSaved)) {
+      if (drop.has(j)) continue;
+      for (let p = 0; p < this.K; p++) this.device.queue.writeBuffer(this.buffers.theta, (p * P.count + P.w1 + j * hidden) * 4, row);
+      this.maskSaved.delete(j);
+    }
+    this.lastMask = { dropped: Array.from(drop).sort((a, b) => a - b), lowest: order.slice(0, 12), salience: Array.from(salience) };
+    return this.lastMask;
+  }
+
+  zeroMaskedInputs() {
+    const P = this.params;
+    if (!this.lastMask) return;
+    const zeros = new Float32Array(P.hidden);
+    for (const j of this.lastMask.dropped) for (let p = 0; p < this.K; p++) this.device.queue.writeBuffer(this.buffers.theta, (p * P.count + P.w1 + j * P.hidden) * 4, zeros);
+  }
+
   setParams(partial) {
     Object.assign(this.opts, partial);
     if (this.controller) this.controller.configure(partial);
@@ -619,7 +674,7 @@ export class RlBackend {
     const pop = this.K > 1 ? this.popSummary() : null;
     const d = this.diagnostics;
     const archive = { best: Number.isFinite(this.bestEval) ? this.bestEval : 0, mean: d.returnMean / Math.max(1e-6, d.rewardScale), count: this.passes };
-    return { tick: this.tick, passes: this.passes, train, eval: evalSummary, archive, worldScores: this.worldScores, stepMs: this.lastStepMs, ticksPerDispatch: this.opts.rolloutTicks, ppo: Object.assign({ windowEval: this.lastWindowEval, bestEval: this.bestEval }, d), league: this.leagueSummary(), curriculum, pop };
+    return { tick: this.tick, passes: this.passes, train, eval: evalSummary, archive, worldScores: this.worldScores, stepMs: this.lastStepMs, ticksPerDispatch: this.opts.rolloutTicks, ppo: Object.assign({ windowEval: this.lastWindowEval, bestEval: this.bestEval }, d), league: this.leagueSummary(), curriculum, pop, mask: this.lastMask || null };
   }
 
   leagueSummary() {
@@ -643,7 +698,7 @@ export class RlBackend {
   async snapshot(worldIndex) {
     const L = this.layout;
     const all = new Uint32Array(await this.readWords(this.buffers.world, worldIndex * L.worldStride * 4, L.worldStride * 4));
-    return this.game.snapshotFromWords(all.slice(24, 24 + this.game.worldWords), all[0]);
+    return this.game.snapshotFromWords(all.slice(WORLD_HDR_WORDS, WORLD_HDR_WORDS + this.game.worldWords), all[0]);
   }
 
   async exportPopulation(best) {
@@ -661,6 +716,7 @@ export class RlBackend {
 
   async exportChampions(n) {
     if (this.K > 1) return this.exportPopulation(false);
+    this.zeroMaskedInputs();
     const current = await this.readFloats('theta', 0, this.params.count);
     const meta = { fitness: Number.isFinite(this.bestEval) ? this.bestEval : 0, iterations: this.passes, ticks: this.tick };
     const list = [rlThetaToGenome(current, this.params, this.game, this.opts, meta)];
@@ -773,6 +829,45 @@ export class RlBackend {
     const ctls = [];
     for (let p = 0; p < this.K; p++) ctls.push(await this.readFloats('opt', p * L.optStride + 2 * this.params.count, RL_CTL.SIZE));
     return { theta, obs, rec, lane, ctl: ctls[0], ctls };
+  }
+
+  async fitProbe() {
+    const P = this.params;
+    const R = rlRecordLayout(P.nOut);
+    const steps = Math.max(1, this.opts.rolloutTicks);
+    const blocks = Math.min(256, Math.max(1, Math.floor(this.layout.recFloats / (steps * R.stride))));
+    const sigma = Array.from(await this.readFloats('theta', P.logStd, P.nOut), (v) => Math.exp(v));
+    const rec = await this.readFloats('rec', 0, blocks * steps * R.stride);
+    const sum = new Float64Array(P.nOut);
+    const sq = new Float64Array(P.nOut);
+    const sat = new Float64Array(P.nOut);
+    let n = 0, sr = 0, srr = 0, sd = 0, sdd = 0, sa = 0, saa = 0;
+    for (let b = 0; b < blocks; b++) {
+      for (let k = 0; k < steps; k++) {
+        const base = (b * steps + k) * R.stride;
+        if (rec[base + R.prevValid] <= 0.5) continue;
+        const r = rec[base + R.returns];
+        const gap = r - rec[base + R.value];
+        const adv = rec[base + R.advantage];
+        n++; sr += r; srr += r * r; sd += gap; sdd += gap * gap; sa += adv; saa += adv * adv;
+        for (let c = 0; c < P.nOut; c++) {
+          const x = rec[base + c];
+          sum[c] += x; sq[c] += x * x;
+          if (Math.abs(x) > 0.95) sat[c]++;
+        }
+      }
+    }
+    if (n === 0) return null;
+    const varR = Math.max(1e-12, srr / n - (sr / n) ** 2);
+    const varD = sdd / n - (sd / n) ** 2;
+    const out = { samples: n, explainedVariance: 1 - varD / varR, advStd: Math.sqrt(Math.max(0, saa / n - (sa / n) ** 2)), sigma, mean: [], std: [], sat: [] };
+    for (let c = 0; c < P.nOut; c++) {
+      const m = sum[c] / n;
+      out.mean.push(m);
+      out.std.push(Math.sqrt(Math.max(0, sq[c] / n - m * m)));
+      out.sat.push(sat[c] / n);
+    }
+    return out;
   }
 
   roleOf(data, b) {
@@ -905,7 +1000,7 @@ export class RlBackend {
       for (let w = 0; w < checked; w++) {
         const header = new Uint32Array(await t.readWords(t.buffers.world, w * t.layout.worldStride * 4, 4));
         const seed = header[0];
-        const env = game.createEnv(seed, game.randomCfg(seed), false, new Int32Array(NSTATS));
+        const env = game.createEnv(seed, game.randomCfg(seed, t.opts), false, new Int32Array(NSTATS));
         env.difficulty = 100;
         const life = new Float64Array(slots);
         for (let a = 0; a < slots; a++) life[a] = mix(seed, a, 0, 11) % trainAge;
@@ -969,7 +1064,7 @@ export class RlBackend {
         }
       }
       for (let w = 0; w < checked; w++) {
-        const words = new Uint32Array(await t.readWords(t.buffers.world, (w * t.layout.worldStride + 24) * 4, game.worldWords * 4));
+        const words = new Uint32Array(await t.readWords(t.buffers.world, (w * t.layout.worldStride + WORLD_HDR_WORDS) * 4, game.worldWords * 4));
         const expected = game.packEnv(replays[w].env);
         for (let i = 0; i < expected.length; i++) if (words[i] !== expected[i]) throw new Error('world ' + w + ' state word ' + i + ': gpu ' + (words[i] | 0) + ' js ' + (expected[i] | 0));
       }
@@ -1322,7 +1417,7 @@ export class RlBackend {
       for (let w = 0; w < Math.min(t.evalStart, 4); w++) {
         const header = new Uint32Array(await t.readWords(t.buffers.world, w * t.layout.worldStride * 4, 4));
         const seed = header[0];
-        const env = game.createEnv(seed, game.randomCfg(seed), false, new Int32Array(NSTATS));
+        const env = game.createEnv(seed, game.randomCfg(seed, t.opts), false, new Int32Array(NSTATS));
         env.difficulty = 100;
         const life = new Float64Array(slots);
         for (let a = 0; a < slots; a++) life[a] = mix(seed, a, 0, 11) % trainAge;
@@ -1688,7 +1783,7 @@ export class RlBackend {
         for (let w = 0; w < Math.min(t.evalStart, worldCount); w++) {
         const header = new Uint32Array(await t.readWords(t.buffers.world, w * t.layout.worldStride * 4, 4));
         const seed = header[0];
-        const env = game.createEnv(seed, game.randomCfg(seed), false, new Int32Array(NSTATS));
+        const env = game.createEnv(seed, game.randomCfg(seed, t.opts), false, new Int32Array(NSTATS));
         env.difficulty = 100;
         const life = new Float64Array(slots);
         for (let a = 0; a < slots; a++) life[a] = mix(seed, a, 0, 11) % trainAge;

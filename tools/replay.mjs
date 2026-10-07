@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Brain, Rng, mix, evoConfig, genomeFromJSON, randomGenome, STAT, STRUCT_PERIOD, REWARD_SCALE } from '../src/core.js';
+import { Brain, Rng, mix, evoConfig, genomeFromJSON, randomGenome, STAT, NSTATS, STRUCT_PERIOD, REWARD_SCALE } from '../src/core.js';
 
 const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MAX_EDGES = 256;
@@ -93,7 +93,7 @@ function runWorld(mod, genomes, worldSeed, ticks, selfplay, assign) {
   const dims = REALM.dims;
   const nOut = dims.nOut;
   const evo = evoConfig(null);
-  const stats = new Int32Array(16);
+  const stats = new Int32Array(NSTATS);
   const cfg = REALM.defaultCfg();
   if (selfplay) cfg.learnerSlots = PLAYERS;
   const env = REALM.createEnv(worldSeed, cfg, true, stats);

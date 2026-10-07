@@ -26,6 +26,7 @@ const RW_PVP_REWARD: i32 = 256;
 const RW_PVP_COUNT_SHIFT: u32 = 5u;
 const RW_LAST_HIT_REWARD: i32 = 384;
 const RW_SLOTS_OFF: u32 = 2600u;
+const RW_GATE_OFF: u32 = 2605u;
 const RW_BOSS_LAST_GOLD: i32 = 30;
 const RW_GPROG_OFF: u32 = 2568u;
 const RW_GREAT_NEED: i32 = 60;
@@ -36,10 +37,18 @@ const RW_BOSS_LEVEL: i32 = 10;
 const RW_BOSS_RESPAWN: i32 = 1200;
 const RW_BOSS_DAMAGE: i32 = 44;
 const RW_BOSS_COOLDOWN: i32 = 30;
+const RW_CAST_RANGE: i32 = 600;
+const RW_CAST_COOLDOWN: i32 = 30;
+const RW_BOLT_RANGE: i32 = 900;
+const RW_SHOCK_RADIUS: i32 = 300;
+const RW_BLINK_DIST: i32 = 400;
 const RW_BOSS_WINDOW: i32 = 60;
 const RW_BOSS_GOLD: i32 = 60;
 const RW_BOSS_XP: i32 = 200;
 const RW_BOSS_FLEE: i32 = 1300;
+const RW_BOSS_ENGAGE: i32 = 1200;
+const RW_BOT_GREAT_RANGE: i32 = 900;
+const RW_BOT_GATHER_RANGE: i32 = 300;
 const RW_GREAT_GOLD: i32 = 15;
 const RW_GREAT_TOGETHER: i32 = 2;
 const RW_GUARD_PCT: i32 = 10;
@@ -53,6 +62,7 @@ const RW_RAID_RADIUS: i32 = 2600;
 const RW_MARKET_FLOOR: i32 = 30;
 const RW_MARKET_CAP: i32 = 150;
 const RW_MARKET_DECAY: u32 = 6u;
+const RW_TOWN_BIAS: i32 = 35;
 const RW_ALIVE_REWARD: i32 = 1;
 const RW_GREAT_REWARD: i32 = 1024;
 const RW_BOSS_RARE: i32 = 2;
@@ -70,9 +80,24 @@ const RW_BERRY_REGROW: i32 = 800;
 const RW_MOB_DAMAGE_STEP: i32 = 4;
 const RW_STEER_AHEAD: i32 = 192;
 const RW_STEER_RAY: i32 = 20;
+const RW_TRADE_RANGE: i32 = 200;
+const RW_TRADE_RANGE2: i32 = 40000;
+const RW_TRADE_PRICE: i32 = 8;
+const RW_TRADE_REWARD: i32 = 32;
+const RW_RAT_CAP: i32 = 4;
 const RW_SHAPE_NEED: i32 = 50;
 const RW_PLAYER_KEY: i32 = 1000000;
 const RW_DAY_AGGRO: i32 = 700;
+const RW_STALKER_AGGRO: i32 = 600;
+const RW_AMBUSH_AGGRO: i32 = 320;
+const RW_PACK_RADIUS: i32 = 700;
+const RW_PACK_NEED: i32 = 2;
+const RW_CASTER_FAR: i32 = 450;
+const RW_CASTER_NEAR: i32 = 350;
+const RW_CLEAVE_RADIUS: i32 = 300;
+const RW_CLEAVE_NEED: i32 = 2;
+const RW_WARD_PCT: i32 = 25;
+const RW_BULWARK_PCT: i32 = 25;
 const RW_SHAPE_CLAMP: i32 = 8;
 const RW_MS_GREAT: u32 = 0u;
 const RW_MS_BOSS: u32 = 1u;
@@ -108,8 +133,8 @@ const RW_TOWN: u32 = 4u;
 const R_S: u32 = 33u;
 const RW_OBS_EMPTY: u32 = 1000000000u;
 const RW_KEY_NONE: u32 = 0xffffffffu;
-const RW_SLOT_SPRING: u32 = 78u;
-const RW_SLOT_BERRY: u32 = 92u;
+const RW_SLOT_SPRING: u32 = 84u;
+const RW_SLOT_BERRY: u32 = 85u;
 
 const RX_X: u32 = 0u;
 const RX_Y: u32 = 1u;
@@ -158,6 +183,7 @@ const RS_PVP: u32 = STAT_GAME0 + 3u;
 const RS_HARVEST: u32 = STAT_GAME0 + 4u;
 const RS_ALLY: u32 = STAT_GAME0 + 5u;
 const RS_DEATHS: u32 = STAT_GAME0 + 6u;
+const RS_ATK_MELEE: u32 = STAT_GAME0 + 7u;
 
 var<workgroup> r_f: array<i32, 2112>;
 var<workgroup> r_nxy: array<u32, 256>;
@@ -189,13 +215,16 @@ var<workgroup> r_mobpct: i32;
 var<workgroup> r_hunger: i32;
 var<workgroup> r_pvp: i32;
 var<workgroup> r_slots: i32;
+var<workgroup> r_gate_shift: u32;
 var<workgroup> r_brain: u32;
+var<workgroup> r_trade: array<atomic<u32>, 8u>;
 var<workgroup> r_anydie: atomic<u32>;
 var<workgroup> r_atkmask: array<atomic<u32>, 2>;
 
 var<private> r_nd2: array<i32, 10>;
 var<private> r_ndx: array<i32, 10>;
 var<private> r_ndy: array<i32, 10>;
+var<private> r_nidx: array<i32, 10>;
 var<private> r_tree_d2: i32;
 var<private> r_tree_great: bool;
 var<private> r_ore_d2: i32;
@@ -210,6 +239,7 @@ var<private> RW_DIRY: array<i32, 8> = array<i32, 8>(0, 90, 128, 90, 0, -90, -128
 fn r_atk_t(e: u32) -> i32 { return ((r_atk[e] >> 16u) & 255) - 1; }
 fn r_atk_d(e: u32) -> i32 { return r_atk[e] & 65535; }
 fn r_atk_s(e: u32) -> i32 { return (r_atk[e] >> 24u) & 3; }
+fn r_atk_c(e: u32) -> i32 { return (r_atk[e] >> 26u) & 1; }
 fn r_set_ctl(e: u32, x: i32, y: i32) { r_ctl[e] = (x & 0xffff) | (y << 16u); }
 fn r_ctlx(e: u32) -> i32 { return (r_ctl[e] << 16u) >> 16u; }
 fn r_ctly(e: u32) -> i32 { return r_ctl[e] >> 16u; }
@@ -403,6 +433,13 @@ fn r_nearest_town(x: i32, y: i32) {
   }
 }
 
+fn r_in_cover(x: i32, y: i32) -> bool {
+  let cx = u32(x >> 8u);
+  let cy = u32(y >> 8u);
+  if (r_terrain(cx, cy) == 1u) { return true; }
+  return r_terrain((cx + 1u) & 31u, cy) == 1u || r_terrain((cx + 31u) & 31u, cy) == 1u || r_terrain(cx, (cy + 1u) & 31u) == 1u || r_terrain(cx, (cy + 31u) & 31u) == 1u;
+}
+
 fn r_in_safe(x: i32, y: i32) -> bool {
   for (var i = 0u; i < 4u; i++) {
     let dx = r_town_cx(i) * 256 + 128 - x;
@@ -412,7 +449,10 @@ fn r_in_safe(x: i32, y: i32) -> bool {
   return false;
 }
 
-fn r_price(k: u32) -> i32 { return max(RW_MARKET_FLOOR, 100 - r_sat[k]); }
+fn r_price(k: u32) -> i32 {
+  let scarce = (k & 1u) != (k >> 2u);
+  return max(RW_MARKET_FLOOR, 100 - r_sat[k] + select(-RW_TOWN_BIAS, RW_TOWN_BIAS, scarce));
+}
 
 fn r_alive(e: u32) -> bool { return r_f[e * R_S + RX_DEAD] == 0; }
 
@@ -427,6 +467,15 @@ fn r_max_hp(e: u32) -> i32 {
   let b = e * R_S;
   if (e >= RW_PLAYERS) { return 30 + 15 * r_f[b + RX_LEVEL]; }
   return 90 + 10 * max(r_level(r_f[b + RX_XP0]), max(r_level(r_f[b + RX_XP1]), r_level(r_f[b + RX_XP2])));
+}
+
+fn r_mob_kind(e: u32) -> i32 {
+  return i32((e - RW_MOB0) % 5u);
+}
+
+
+fn r_mob_hp_scale(k: i32) -> i32 {
+  return select(select(select(select(6, 4, k == 1), 4, k == 2), 3, k == 3), 5, k == 4);
 }
 
 fn r_spawn(e: u32, tick: u32) {
@@ -480,7 +529,7 @@ fn r_spawn(e: u32, tick: u32) {
   } else if (e < RW_ANIMAL0) {
     r_f[b + RX_LEVEL] = 1 + min(7, r_isqrt(r_td2) / 600);
     r_f[b + RX_STYLE] = i32(e % 3u);
-    r_f[b + RX_HP] = 30 + 15 * r_f[b + RX_LEVEL];
+    r_f[b + RX_HP] = ((30 + 15 * r_f[b + RX_LEVEL]) * r_mob_hp_scale(r_mob_kind(e))) / 4;
   } else {
     r_f[b + RX_LEVEL] = 1;
     r_f[b + RX_HP] = 20;
@@ -564,35 +613,45 @@ fn r_bot_prescan(t: u32, tick: u32) {
     let dx = i32(pos & 0xffffu) - ex;
     let dy = i32(pos >> 16u) - ey;
     let d2 = dx * dx + dy * dy;
-    if (d2 < view2) { atomicMin(&obsBuf[k * 6u + need], (u32(d2) << 8u) | j); }
+    if (d2 < view2) { atomicMin(&obsBuf[k * 7u + need], (u32(d2) << 8u) | j); }
   }
   let m0 = RW_MOB0 + q * 5u;
   for (var j = m0; j < m0 + 5u; j++) {
     let dx = r_f[j * R_S + RX_X] - ex;
     let dy = r_f[j * R_S + RX_Y] - ey;
     let d2 = dx * dx + dy * dy;
-    if (d2 < view2 && r_alive(j)) { atomicMin(&obsBuf[k * 6u + 4u], (u32(d2) << 8u) | j); }
+    if (d2 < view2 && r_alive(j)) { atomicMin(&obsBuf[k * 7u + 4u], (u32(d2) << 8u) | j); }
+  }
+  let a0 = RW_ANIMAL0 + q * 2u;
+  for (var j = a0; j < a0 + 2u; j++) {
+    let dx = r_f[j * R_S + RX_X] - ex;
+    let dy = r_f[j * R_S + RX_Y] - ey;
+    let d2 = dx * dx + dy * dy;
+    if (d2 < view2 && r_alive(j)) { atomicMin(&obsBuf[k * 7u + 5u], (u32(d2) << 8u) | j); }
   }
   if (q == 0u) {
     for (var j = RW_BOSS0; j < RW_ANIMAL0; j++) {
       let dx = r_f[j * R_S + RX_X] - ex;
       let dy = r_f[j * R_S + RX_Y] - ey;
       let d2 = dx * dx + dy * dy;
-      if (d2 < view2 && r_alive(j)) { atomicMin(&obsBuf[k * 6u + 5u], u32(d2)); }
+      if (d2 < view2 && r_alive(j)) { atomicMin(&obsBuf[k * 7u + 6u], (u32(d2) << 8u) | j); }
     }
   }
 }
 
 fn r_load_bot_scan(e: u32) {
-  for (var i = 0u; i < 10u; i++) { r_nd2[i] = RW_FAR; }
+  for (var i = 0u; i < 10u; i++) { r_nd2[i] = RW_FAR; r_nidx[i] = -1; }
   let k = e - r_brain;
   let ex = r_f[e * R_S + RX_X];
   let ey = r_f[e * R_S + RX_Y];
-  for (var ty = 0u; ty < 5u; ty++) {
-    let key = atomicLoad(&obsBuf[k * 6u + ty]);
+  for (var ty = 0u; ty < 6u; ty++) {
+    let key = atomicLoad(&obsBuf[k * 7u + ty]);
     var dx = 0;
     var dy = 0;
     var d2 = RW_FAR;
+    var slot = ty;
+    if (ty == 4u) { slot = 5u; }
+    else if (ty == 5u) { slot = 6u; }
     if (key != RW_KEY_NONE) {
       let j = key & 255u;
       d2 = i32(key >> 8u);
@@ -604,14 +663,20 @@ fn r_load_bot_scan(e: u32) {
         dx = r_f[j * R_S + RX_X] - ex;
         dy = r_f[j * R_S + RX_Y] - ey;
       }
+      r_nidx[slot] = i32(j);
     }
-    let slot = select(ty, 5u, ty == 4u);
     r_nd2[slot] = d2;
     r_ndx[slot] = dx;
     r_ndy[slot] = dy;
   }
-  let bossKey = atomicLoad(&obsBuf[k * 6u + 5u]);
-  if (bossKey != RW_KEY_NONE) { r_nd2[9] = i32(bossKey); }
+  let bossKey = atomicLoad(&obsBuf[k * 7u + 6u]);
+  if (bossKey != RW_KEY_NONE) {
+    let j = bossKey & 255u;
+    r_nd2[9] = i32(bossKey >> 8u);
+    r_nidx[9] = i32(j);
+    r_ndx[9] = r_f[j * R_S + RX_X] - ex;
+    r_ndy[9] = r_f[j * R_S + RX_Y] - ey;
+  }
 }
 
 fn r_ally_count(e: u32) -> i32 {
@@ -632,6 +697,51 @@ fn r_near_value(d2: f32, view: i32) -> f32 {
   return f32(view - r_isqrt(i32(d2))) * (1.0 / 2048.0);
 }
 
+fn r_hostile_code(j: u32) -> f32 {
+  if (j >= 64u) { return 0.0; }
+  if (r_is_boss(j)) { return 0.75; }
+  if (j >= RW_ANIMAL0) { return 0.875; }
+  return f32(1 + ((j - RW_MOB0) % 5u)) * 0.125;
+}
+
+fn r_boss_phase(j: u32) -> i32 {
+  let hp = r_f[j * R_S + RX_HP];
+  if (hp * 3 > RW_BOSS_HP * 2) { return 1; }
+  if (hp * 3 > RW_BOSS_HP) { return 2; }
+  return 3;
+}
+
+fn r_aura_range(ph: i32) -> i32 {
+  return select(select(0, 400, ph == 2), 500, ph == 3);
+}
+
+fn r_aura_damage(ph: i32) -> i32 {
+  return select(select(0, 3, ph == 2), 5, ph == 3);
+}
+
+fn r_tier_of(e: u32, s: u32) -> i32 {
+  let lv = r_level(r_f[e * R_S + RX_XP0 + s]);
+  if (lv >= 7) { return 3; }
+  if (lv >= 5) { return 2; }
+  if (lv >= 3) { return 1; }
+  return 0;
+}
+
+fn r_cleave_count(ex: i32, ey: i32) -> i32 {
+  var n = 0;
+  for (var j = RW_MOB0; j < RW_ANIMAL0; j = j + 1u) {
+    if (!r_alive(j)) { continue; }
+    let dx = r_f[j * R_S + RX_X] - ex;
+    let dy = r_f[j * R_S + RX_Y] - ey;
+    if (dx * dx + dy * dy < RW_CLEAVE_RADIUS * RW_CLEAVE_RADIUS) { n = n + 1; }
+  }
+  return n;
+}
+
+fn r_perk_tier(e: u32) -> i32 {
+  return max(max(r_tier_of(e, 0u), r_tier_of(e, 1u)), r_tier_of(e, 2u));
+}
+
 fn g_observe(t: u32, tick: u32) {
   let l = t % LEARNERS;
   let q = t / LEARNERS;
@@ -647,35 +757,39 @@ fn g_observe(t: u32, tick: u32) {
   r_scan_part(l, q, parts, tick);
   workgroupBarrier();
   let view = r_view(tick);
-  for (var i = q * slotStep; i < q * slotStep + slotStep; i++) { set_obs(l, i, r_near_value(f32(atomicLoad(&obsBuf[l * OSTR + i])), view)); }
+  let animalCls = 6u;
+  for (var i = q * slotStep; i < q * slotStep + slotStep; i++) {
+    let c = i / 8u;
+    if (c != animalCls) { set_obs(l, select(i - 8u, i, c < animalCls), r_near_value(f32(atomicLoad(&obsBuf[l * OSTR + i])), view)); }
+  }
   if ((0u % parts) == q) {
     let b = l * R_S;
     r_nearest_town(r_f[b + RX_X], r_f[b + RX_Y]);
-    set_obs(l, 72u, f32(r_f[b + RX_HP]) * (1.0 / 256.0));
-    set_obs(l, 73u, f32(r_f[b + RX_FOOD]) * (1.0 / 128.0));
-    set_obs(l, 74u, f32(r_f[b + RX_WATER]) * (1.0 / 128.0));
-    set_obs(l, 75u, f32(r_level(r_f[b + RX_XP0])) * (1.0 / 16.0));
-    set_obs(l, 76u, f32(r_level(r_f[b + RX_XP1])) * (1.0 / 16.0));
-    set_obs(l, 77u, f32(r_level(r_f[b + RX_XP2])) * (1.0 / 16.0));
-    set_obs(l, 79u, f32(r_f[b + RX_WOOD]) * (1.0 / 8.0));
-    set_obs(l, 80u, f32(r_f[b + RX_ORE]) * (1.0 / 8.0));
-    set_obs(l, 81u, f32(min(r_f[b + RX_GOLD], 64)) * (1.0 / 64.0));
-    set_obs(l, 82u, f32(r_f[b + RX_RAT]) * (1.0 / 4.0));
-    set_obs(l, 83u, f32(r_f[b + RX_TOOL]) * (1.0 / 4.0));
-    set_obs(l, 84u, f32(r_f[b + RX_WEAP]) * (1.0 / 4.0));
-    set_obs(l, 86u, select(0.0, 1.0, r_night(tick)));
-    set_obs(l, 87u, select(0.0, 1.0, r_td2 < RW_REACH_TOWN * RW_REACH_TOWN));
+    set_obs(l, 64u, f32(r_f[b + RX_HP]) * (1.0 / 256.0));
+    set_obs(l, 65u, f32(r_f[b + RX_FOOD]) * (1.0 / 128.0));
+    set_obs(l, 66u, f32(r_f[b + RX_WATER]) * (1.0 / 128.0));
+    set_obs(l, 67u, f32(r_level(r_f[b + RX_XP0])) * (1.0 / 16.0));
+    set_obs(l, 68u, f32(r_level(r_f[b + RX_XP1])) * (1.0 / 16.0));
+    set_obs(l, 69u, f32(r_level(r_f[b + RX_XP2])) * (1.0 / 16.0));
+    set_obs(l, 71u, f32(r_f[b + RX_WOOD]) * (1.0 / 8.0));
+    set_obs(l, 72u, f32(r_f[b + RX_ORE]) * (1.0 / 8.0));
+    set_obs(l, 73u, f32(min(r_f[b + RX_GOLD], 64)) * (1.0 / 64.0));
+    set_obs(l, 74u, f32(r_f[b + RX_RAT]) * (1.0 / 4.0));
+    set_obs(l, 75u, f32(r_f[b + RX_TOOL]) * (1.0 / 4.0));
+    set_obs(l, 76u, f32(r_f[b + RX_WEAP]) * (1.0 / 4.0));
+    set_obs(l, 78u, select(0.0, 1.0, r_night(tick)));
+    set_obs(l, 79u, select(0.0, 1.0, r_td2 < RW_REACH_TOWN * RW_REACH_TOWN));
     let len = r_isqrt(r_tdx * r_tdx + r_tdy * r_tdy);
     let safe = max(len, 1);
-    set_obs(l, 88u, select(f32((r_tdx * 128) / safe) * (1.0 / 128.0), 0.0, len == 0));
-    set_obs(l, 89u, select(f32((r_tdy * 128) / safe) * (1.0 / 128.0), 0.0, len == 0));
-    set_obs(l, 91u, f32(r_f[b + RX_RARE]) * (1.0 / 8.0));
-    set_obs(l, 102u, select(0.0, 1.0, r_td2 > RW_FAR_ZONE * RW_FAR_ZONE));
-    set_obs(l, 103u, f32(r_price(r_tidx)) * (1.0 / 128.0));
-    set_obs(l, 104u, f32(r_price(r_tidx + 4u)) * (1.0 / 128.0));
+    set_obs(l, 80u, select(f32((r_tdx * 128) / safe) * (1.0 / 128.0), 0.0, len == 0));
+    set_obs(l, 81u, select(f32((r_tdy * 128) / safe) * (1.0 / 128.0), 0.0, len == 0));
+    set_obs(l, 83u, f32(r_f[b + RX_RARE]) * (1.0 / 8.0));
+    set_obs(l, 94u, select(0.0, 1.0, r_td2 > RW_FAR_ZONE * RW_FAR_ZONE));
+    set_obs(l, 95u, f32(r_price(r_tidx)) * (1.0 / 128.0));
+    set_obs(l, 96u, f32(r_price(r_tidx + 4u)) * (1.0 / 128.0));
   }
   if ((1u % parts) == q) {
-    set_obs(l, 90u, f32(r_ally_count(l)) * (1.0 / 8.0));
+    set_obs(l, 82u, f32(r_ally_count(l)) * (1.0 / 8.0));
   }
   if ((2u % parts) == q) {
     let b = l * R_S;
@@ -712,16 +826,16 @@ fn g_observe(t: u32, tick: u32) {
     var needLen = 0;
     if (needD2 != RW_FAR) { needLen = r_isqrt(needD2); }
     let safeLen = max(needLen, 1);
-    set_obs(l, 78u, select(f32(((needDx * 128) / safeLen) * urge) * (1.0 / 8192.0), 0.0, needLen == 0));
-    set_obs(l, 92u, select(f32(((needDy * 128) / safeLen) * urge) * (1.0 / 8192.0), 0.0, needLen == 0));
-    set_obs(l, 93u, f32(urge) * (1.0 / 64.0));
+    set_obs(l, 70u, select(f32(((needDx * 128) / safeLen) * urge) * (1.0 / 8192.0), 0.0, needLen == 0));
+    set_obs(l, 84u, select(f32(((needDy * 128) / safeLen) * urge) * (1.0 / 8192.0), 0.0, needLen == 0));
+    set_obs(l, 85u, f32(urge) * (1.0 / 64.0));
   }
   if ((3u % parts) == q) {
     let b = l * R_S;
     let ex = r_f[b + RX_X];
     let ey = r_f[b + RX_Y];
-    set_obs(l, 94u, select(0.0, 1.0, r_in_safe(ex, ey)));
-    set_obs(l, 95u, select(0.0, 1.0, r_f[b + RX_LAST_HIT] < 40));
+    set_obs(l, 86u, select(0.0, 1.0, r_in_safe(ex, ey)));
+    set_obs(l, 87u, select(0.0, 1.0, r_f[b + RX_LAST_HIT] < 40));
     var bossD2 = RW_FAR;
     var bossIdx = 0u;
     for (var j = RW_BOSS0; j < RW_ANIMAL0; j++) {
@@ -733,10 +847,10 @@ fn g_observe(t: u32, tick: u32) {
     }
     let bossSeen = bossD2 < view * view;
     let resist = select(3u, r_boss_resist(bossIdx), bossSeen);
-    set_obs(l, 96u, select(0.0, r_near_value(f32(bossD2), view), bossSeen));
-    set_obs(l, 97u, select(0.0, 1.0, resist == 0u));
-    set_obs(l, 98u, select(0.0, 1.0, resist == 1u));
-    set_obs(l, 99u, select(0.0, 1.0, resist == 2u));
+    set_obs(l, 88u, select(0.0, r_near_value(f32(bossD2), view), bossSeen));
+    set_obs(l, 89u, select(0.0, 1.0, resist == 0u));
+    set_obs(l, 90u, select(0.0, 1.0, resist == 1u));
+    set_obs(l, 91u, select(0.0, 1.0, resist == 2u));
     var greatD2 = RW_FAR;
     var greatIdx = RW_GREAT0;
     for (var j = RW_GREAT0; j < RW_GREAT_END; j++) {
@@ -747,13 +861,44 @@ fn g_observe(t: u32, tick: u32) {
       let d2 = dx * dx + dy * dy;
       if (d2 < greatD2) { greatD2 = d2; greatIdx = j; }
     }
-    set_obs(l, 100u, select(0.0, f32(r_gprog[greatIdx - RW_GREAT0]) * (1.0 / 64.0), greatD2 < view * view));
+    set_obs(l, 92u, select(0.0, f32(r_gprog[greatIdx - RW_GREAT0]) * (1.0 / 64.0), greatD2 < view * view));
     var greatLen = 0;
     if (greatD2 < view * view) { greatLen = r_isqrt(greatD2); }
     let gpos = r_nxy[greatIdx];
     let greatSafe = max(greatLen, 1);
-    set_obs(l, 85u, select(f32(((i32(gpos & 0xffffu) - ex) * 128) / greatSafe) * (1.0 / 128.0), 0.0, greatLen == 0));
-    set_obs(l, 101u, select(f32(((i32(gpos >> 16u) - ey) * 128) / greatSafe) * (1.0 / 128.0), 0.0, greatLen == 0));
+    set_obs(l, 77u, select(f32(((i32(gpos & 0xffffu) - ex) * 128) / greatSafe) * (1.0 / 128.0), 0.0, greatLen == 0));
+    set_obs(l, 93u, select(f32(((i32(gpos >> 16u) - ey) * 128) / greatSafe) * (1.0 / 128.0), 0.0, greatLen == 0));
+    var hD2 = RW_FAR;
+    var hIdx = 64u;
+    for (var j = RW_MOB0; j < RW_ANIMAL0; j++) {
+      if (!r_alive(j)) { continue; }
+      let dx = r_f[j * R_S + RX_X] - ex;
+      let dy = r_f[j * R_S + RX_Y] - ey;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < hD2) { hD2 = d2; hIdx = j; }
+    }
+    var aD2 = RW_FAR;
+    var aIdx = 64u;
+    for (var j = RW_ANIMAL0; j < 64u; j++) {
+      if (!r_alive(j)) { continue; }
+      let dx = r_f[j * R_S + RX_X] - ex;
+      let dy = r_f[j * R_S + RX_Y] - ey;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < aD2) { aD2 = d2; aIdx = j; }
+    }
+    set_obs(l, 97u, select(0.0, 1.0, r_in_cover(r_f[l * R_S + RX_X], r_f[l * R_S + RX_Y])));
+    set_obs(l, 98u, r_hostile_code(select(select(64u, aIdx, aD2 < view * view), hIdx, hD2 < view * view)));
+    set_obs(l, 99u, select(0.0, f32(r_boss_phase(bossIdx)) * 0.25, bossSeen));
+    set_obs(l, 100u, f32(r_perk_tier(l)) * 0.25);
+    let tdef = 200 - r_f[b + RX_FOOD] - r_f[b + RX_WATER];
+    let tafford = select(0, 1, r_f[b + RX_GOLD] >= RW_TRADE_PRICE);
+    set_obs(l, 101u, f32(tafford * tdef) * (1.0 / 256.0) - f32(r_f[b + RX_RAT]) * 0.25);
+    let tp = r_trade_partner(l);
+    var tdx = 0.0;
+    if (tp >= 0 && r_trade_partner(u32(tp)) == i32(l)) {
+      tdx = f32(RW_TRADE_RANGE - r_isqrt(r_trade_d2(l, u32(tp)))) * (1.0 / 256.0);
+    }
+    set_obs(l, 102u, tdx);
   }
 }
 
@@ -786,10 +931,28 @@ fn r_style_cooldown(s: i32) -> i32 {
   return 24;
 }
 
+fn r_pack_count(e: u32, victim: u32) -> i32 {
+  let tx = r_f[victim * R_S + RX_X];
+  let ty = r_f[victim * R_S + RX_Y];
+  let kind = r_mob_kind(e);
+  var n = 0;
+  for (var j = RW_MOB0; j < RW_BOSS0; j = j + 1u) {
+    if (j == e || !r_alive(j) || r_mob_kind(j) != kind) { continue; }
+    let dx = r_f[j * R_S + RX_X] - tx;
+    let dy = r_f[j * R_S + RX_Y] - ty;
+    if (dx * dx + dy * dy < RW_PACK_RADIUS * RW_PACK_RADIUS) { n = n + 1; }
+  }
+  return n;
+}
+
 fn r_attack_damage(e: u32, style: i32) -> i32 {
   let b = e * R_S;
   if (e >= RW_PLAYERS) {
-    let base = select(4 + RW_MOB_DAMAGE_STEP * r_f[b + RX_LEVEL], RW_BOSS_DAMAGE, r_is_boss(e));
+    let kind = select(r_mob_kind(e), -1, r_is_boss(e));
+    var base = select(4 + RW_MOB_DAMAGE_STEP * r_f[b + RX_LEVEL], RW_BOSS_DAMAGE, r_is_boss(e));
+    if (kind == 0 || kind == 4) { base = (base * 3) >> 1u; }
+    else if (kind == 1) { base = (base * 5) >> 2u; }
+    else if (kind == 3) { base = (base * 3) >> 2u; }
     return (base * r_mobpct * r_damage_scale()) / 10000;
   }
   let weap = r_f[b + RX_WEAP];
@@ -827,17 +990,97 @@ fn r_try_attack(e: u32, style: i32, allowPlayers: bool) -> bool {
   if (best < 0) { return false; }
   var damage = r_attack_damage(e, style);
   let defenderStyle = r_f[u32(best) * R_S + RX_STYLE];
+  let tier = select(0, r_tier_of(e, u32(style)), e < RW_PLAYERS);
   if (r_beats(style, defenderStyle)) { damage = (damage * 3) >> 1u; }
   else if (r_beats(defenderStyle, style)) { damage = (damage * 3) >> 2u; }
+  if (e < RW_PLAYERS && u32(best) >= RW_PLAYERS && r_in_cover(ex, ey)) { damage = (damage * 3) >> 1u; }
+  if (style == 0 && tier >= 1 && r_cleave_count(ex, ey) >= RW_CLEAVE_NEED) { damage = (damage * 5) >> 2u; }
+  if (style == 0 && tier >= 2 && r_f[u32(best) * R_S + RX_HP] * 4 < r_max_hp(u32(best))) { damage = (damage * 3) >> 1u; }
+  if (style == 2 && tier >= 1 && r_is_boss(u32(best))) { damage = (damage * 5) >> 2u; }
   if (e < RW_PLAYERS && u32(best) < RW_PLAYERS) { damage = damage >> select(2u, 1u, r_brain == RW_PLAYERS); }
-  if (r_is_boss(u32(best)) && i32(r_boss_resist(u32(best))) == style) { damage = damage >> 2u; }
+  if (r_is_boss(u32(best))) {
+    if (r_boss_phase(u32(best)) == 3) { damage = select((damage * 5) >> 2u, 0, i32(r_boss_resist(u32(best))) == style); }
+    else if (i32(r_boss_resist(u32(best))) == style) { damage = damage >> 2u; }
+  }
   if (r_is_boss(u32(best)) && e < RW_PLAYERS) { damage = (damage * (2 + r_f[b + RX_WEAP])) >> 2u; }
   r_atk[e] = damage | ((best + 1) << 16u) | (style << 24u);
   r_act[e] = RA_ATTACK;
   atomicOr(&r_atkmask[e >> 5u], 1u << (e & 31u));
-  var cooldown = r_style_cooldown(style);
+  var cooldown = (r_style_cooldown(style) * select(3, 2, style == 1 && tier >= 1)) / 3;
   if (e >= RW_PLAYERS) { cooldown = select(20, RW_BOSS_COOLDOWN, r_is_boss(e)); }
   r_f[b + RX_CD] = cooldown;
+  return true;
+}
+
+fn r_cast_style(e: u32) -> i32 {
+  let b = e * R_S;
+  let l0 = r_level(r_f[b + RX_XP0]);
+  let l1 = r_level(r_f[b + RX_XP1]);
+  let l2 = r_level(r_f[b + RX_XP2]);
+  if (l1 > l0 && l1 >= l2) { return 1; }
+  if (l2 > l0 && l2 > l1) { return 2; }
+  return 0;
+}
+
+fn r_cast_damage(e: u32) -> i32 {
+  let b = e * R_S;
+  return 7 + 3 * r_level(r_f[b + RX_XP0 + u32(r_cast_style(e))]) + 3 * r_f[b + RX_WEAP];
+}
+
+fn r_blink(e: u32, away: u32) {
+  let b = e * R_S;
+  let ab = away * R_S;
+  let dx = r_f[b + RX_X] - r_f[ab + RX_X];
+  let dy = r_f[b + RX_Y] - r_f[ab + RX_Y];
+  let d = r_isqrt(dx * dx + dy * dy);
+  if (d == 0) { return; }
+  let nx = r_f[b + RX_X] + (dx * RW_BLINK_DIST) / d;
+  let ny = r_f[b + RX_Y] + (dy * RW_BLINK_DIST) / d;
+  if (nx >= 0 && nx <= RW_WORLD - 1 && r_passable_at(nx, r_f[b + RX_Y])) { r_f[b + RX_X] = nx; }
+  if (ny >= 0 && ny <= RW_WORLD - 1 && r_passable_at(r_f[b + RX_X], ny)) { r_f[b + RX_Y] = ny; }
+}
+
+fn r_try_cast(e: u32) -> bool {
+  let b = e * R_S;
+  if (r_f[b + RX_CD] != 0 || r_f[b + RX_RARE] == 0) { return false; }
+  let style = r_cast_style(e);
+  let range = select(RW_CAST_RANGE, RW_BOLT_RANGE, style == 1);
+  let ex = r_f[b + RX_X];
+  let ey = r_f[b + RX_Y];
+  if (e < RW_PLAYERS && r_in_safe(ex, ey)) { return false; }
+  var best = -1;
+  var bestKey = RW_FAR;
+  for (var j = 0u; j < 64u; j++) {
+    if (j == e) { continue; }
+    if (e < RW_PLAYERS) {
+      if (j < RW_PLAYERS && r_pvp == 0 && r_brain < RW_PLAYERS) { continue; }
+    } else if (j >= RW_PLAYERS) { continue; }
+    let jx = r_f[j * R_S + RX_X];
+    let jy = r_f[j * R_S + RX_Y];
+    let dx = jx - ex;
+    let dy = jy - ey;
+    let d2 = dx * dx + dy * dy;
+    if (d2 > range * range || !r_alive(j)) { continue; }
+    let key = d2 + select(0, RW_PLAYER_KEY, j < RW_PLAYERS);
+    if (key >= bestKey) { continue; }
+    if (j < RW_PLAYERS && r_in_safe(jx, jy)) { continue; }
+    best = i32(j);
+    bestKey = key;
+  }
+  if (best < 0) { return false; }
+  var damage = r_cast_damage(e);
+  if (style == 1) { damage = (damage * 3) >> 1u; }
+  if (r_is_boss(u32(best))) {
+    if (r_boss_phase(u32(best)) == 3) { damage = select((damage * 3) >> 1u, 0, i32(r_boss_resist(u32(best))) == style); }
+    else if (i32(r_boss_resist(u32(best))) == style) { damage = damage >> 2u; }
+  }
+  if (e < RW_PLAYERS && u32(best) < RW_PLAYERS) { damage = damage >> select(2u, 1u, r_brain == RW_PLAYERS); }
+  if (r_is_boss(u32(best)) && e < RW_PLAYERS) { damage = (damage * (2 + r_f[b + RX_WEAP])) >> 2u; }
+  r_atk[e] = damage | ((best + 1) << 16u) | (style << 24u) | (1 << 26u);
+  r_act[e] = RA_ATTACK;
+  atomicOr(&r_atkmask[e >> 5u], 1u << (e & 31u));
+  r_f[b + RX_CD] = RW_CAST_COOLDOWN >> select(0u, 1u, r_tier_of(e, 2u) >= 3);
+  r_f[b + RX_RARE] = r_f[b + RX_RARE] - 1;
   return true;
 }
 
@@ -878,7 +1121,9 @@ fn r_learner_decide(e: u32) {
   var style = 0u;
   if (out_of(e, 7u) > out_of(e, 6u)) { style = 1u; }
   if (out_of(e, 8u) > out_of(e, 6u + style)) { style = 2u; }
-  if (out_of(e, 6u + style) > 0.5 && r_try_attack(e, i32(style), true)) { return; }
+  let execStyle = (style + r_gate_shift) % 3u;
+  if (out_of(e, 6u + style) > 0.5 && r_try_attack(e, i32(execStyle), true)) { return; }
+  if (out_of(e, 12u) > 0.5 && r_try_cast(e)) { return; }
   r_nearest_town(r_f[e * R_S + RX_X], r_f[e * R_S + RX_Y]);
   let atTown = r_td2 <= RW_REACH_TOWN * RW_REACH_TOWN;
   if (atTown && out_of(e, 9u) > 0.5 && r_can_craft_tool(e)) { r_act[e] = RA_CRAFT_TOOL; }
@@ -941,6 +1186,19 @@ fn r_go_to(e: u32, cls: u32, tick: u32, allowGreat: bool) {
   r_bot_toward(e, r_ndx[cls], r_ndy[cls]);
 }
 
+fn r_gather_at(j: u32, who: u32) -> bool {
+  let pos = r_nxy[j];
+  let nx = i32(pos & 0xffffu);
+  let ny = i32(pos >> 16u);
+  for (var k = 0u; k < RW_PLAYERS; k++) {
+    if (k == who || !r_alive(k)) { continue; }
+    let dx = r_f[k * R_S + RX_X] - nx;
+    let dy = r_f[k * R_S + RX_Y] - ny;
+    if (dx * dx + dy * dy <= RW_BOT_GATHER_RANGE * RW_BOT_GATHER_RANGE) { return true; }
+  }
+  return false;
+}
+
 fn r_bot_decide(e: u32, tick: u32) {
   let b = e * R_S;
   r_load_bot_scan(e);
@@ -952,27 +1210,67 @@ fn r_bot_decide(e: u32, tick: u32) {
   var style = 0;
   if (l1 > l0) { style = 1; }
   if (l2 > select(l1, l0, style == 0)) { style = 2; }
-  let allowGreat = false;
+  let allowGreat = true;
   let desperate = r_f[b + RX_WATER] < 50 || (r_f[b + RX_FOOD] < 50 && r_f[b + RX_RAT] == 0);
   let bossHold = r_nd2[9] < RW_BOSS_FLEE * RW_BOSS_FLEE && !desperate;
-  if (bossHold && !inTown) {
+  let preyD2 = r_nd2[5];
+  let safe = r_in_safe(r_f[b + RX_X], r_f[b + RX_Y]);
+  let hurt = r_f[b + RX_HP] * 3 < r_max_hp(e);
+  let menaced = preyD2 < 250000 || r_nd2[9] < RW_BOSS_FLEE * RW_BOSS_FLEE;
+  if (!desperate && !inTown && !safe && r_nd2[9] < RW_BOSS_ENGAGE * RW_BOSS_ENGAGE
+    && r_f[b + RX_HP] * 2 > r_max_hp(e)) {
+    if (r_try_attack(e, style, false)) { return; }
+    r_bot_toward(e, r_ndx[9], r_ndy[9]);
+    return;
+  }
+  if (!desperate && !inTown && !safe && (bossHold || (hurt && menaced))) {
+    r_f[b + RX_SPRINT] = 1;
     r_bot_toward(e, r_tdx, r_tdy);
     return;
   }
-  if (r_nd2[5] < 250000 && r_f[b + RX_HP] > 50 && !r_in_safe(r_f[b + RX_X], r_f[b + RX_Y])) {
+  if (preyD2 < 2500000 && r_f[b + RX_HP] > 30 && !safe) {
+    let tstyle = r_f[u32(r_nidx[5]) * R_S + RX_STYLE];
+    if (r_beats(tstyle, style)) { style = (tstyle + 2) % 3; }
     if (r_try_attack(e, style, false)) { return; }
-    r_bot_toward(e, r_ndx[5], r_ndy[5]);
+    if (style == 1 && preyD2 < 90000) { r_bot_toward(e, -r_ndx[5], -r_ndy[5]); }
+    else { r_bot_toward(e, r_ndx[5], r_ndy[5]); }
     return;
   }
   if (r_f[b + RX_WATER] < 50) { r_go_to(e, 3u, tick, allowGreat); return; }
   if (r_f[b + RX_FOOD] < 50 && r_f[b + RX_RAT] == 0) { r_go_to(e, 0u, tick, allowGreat); return; }
+  if (r_f[b + RX_FOOD] < 70 || r_f[b + RX_RAT] < 2) {
+    if (r_nidx[6] >= 0 && r_f[b + RX_HP] * 2 > r_max_hp(e) && r_nd2[6] < 122500 && r_nd2[6] < r_nd2[5]) {
+      if (r_try_attack(e, style, false)) { return; }
+      r_bot_toward(e, r_ndx[6], r_ndy[6]);
+      return;
+    }
+  }
+  if (!desperate && !safe && r_f[b + RX_TOOL] >= RW_GREAT_TOOL && r_f[b + RX_WATER] > 60 && r_f[b + RX_FOOD] > 40) {
+    var gD2 = RW_FAR;
+    var gx = 0;
+    var gy = 0;
+    var gIdx = -1;
+    for (var j = RW_GREAT0; j < RW_GREAT_END; j++) {
+      if (r_ntimer[j] != 0u) { continue; }
+      let pos = r_nxy[j];
+      let dx = i32(pos & 0xffffu) - r_f[b + RX_X];
+      let dy = i32(pos >> 16u) - r_f[b + RX_Y];
+      var d2 = dx * dx + dy * dy;
+      if (d2 < RW_BOT_GREAT_RANGE * RW_BOT_GREAT_RANGE && r_gather_at(j, e)) { d2 = d2 >> 2; }
+      if (d2 < gD2) { gD2 = d2; gx = dx; gy = dy; gIdx = i32(j); }
+    }
+    if (gIdx >= 0 && gD2 < RW_BOT_GREAT_RANGE * RW_BOT_GREAT_RANGE) {
+      if (gD2 <= RW_REACH_NODE * RW_REACH_NODE) { r_act[e] = RA_INTERACT; r_tgt[e] = gIdx; return; }
+      r_bot_toward(e, gx, gy);
+      return;
+    }
+  }
   if (inTown) {
     if (r_can_craft_tool(e)) { r_act[e] = RA_CRAFT_TOOL; return; }
-    if (r_can_craft_weap(e)) { r_act[e] = RA_CRAFT_WEAP; return; }
+    if (r_can_craft_weap(e) && r_f[b + RX_WEAP] < r_f[b + RX_TOOL]) { r_act[e] = RA_CRAFT_WEAP; return; }
     if (r_f[b + RX_WOOD] + r_f[b + RX_ORE] > 0) { r_act[e] = RA_INTERACT; r_tgt[e] = r_nearest_interact(e, allowGreat); return; }
     if (r_f[b + RX_GOLD] >= 15 && r_f[b + RX_RAT] < 2) { r_act[e] = RA_BUY; return; }
   }
-  if (bossHold) { return; }
   if (r_f[b + RX_WOOD] + r_f[b + RX_ORE] >= 8 || (r_f[b + RX_WOOD] >= 4 && r_f[b + RX_ORE] >= 3)) {
     if (r_td2 > RW_REACH_TOWN * RW_REACH_TOWN) { r_bot_toward(e, r_tdx, r_tdy); }
     else { r_act[e] = RA_INTERACT; r_tgt[e] = r_nearest_interact(e, allowGreat); }
@@ -999,20 +1297,29 @@ fn r_mob_decide(e: u32, tick: u32) {
     } else if (((tick >> 4u) + e) % 3u == 0u) { r_wander(e, tick); }
     return;
   }
+  let kind = r_mob_kind(e);
   var aggro = RW_DAY_AGGRO;
   if (r_night(tick)) {
     r_nearest_town(r_f[b + RX_HX], r_f[b + RX_HY]);
     aggro = select(1200, 900 + (900 * world_difficulty()) / 100, r_td2 < RW_RAID_RADIUS * RW_RAID_RADIUS);
   }
-  let style = r_f[b + RX_STYLE];
+  if (kind == 1) { aggro = RW_STALKER_AGGRO; }
+  else if (kind == 4) { aggro = RW_AMBUSH_AGGRO; }
+  else if (best >= 0 && r_in_cover(r_f[u32(best) * R_S + RX_X], r_f[u32(best) * R_S + RX_Y])) { aggro = aggro >> 1u; }
+  let style = select(r_f[b + RX_STYLE], 2, kind == 3);
   let range = r_mob_range(style);
   let hx = r_f[b + RX_HX] - ex;
   let hy = r_f[b + RX_HY] - ey;
-  if (best >= 0 && bestD2 < aggro * aggro && hx * hx + hy * hy < select(9000000, 1440000, r_is_boss(e))) {
+  let leash = select(3000, 1200, r_is_boss(e));
+  var engaged = best >= 0 && bestD2 < aggro * aggro && hx * hx + hy * hy < leash * leash;
+  if (engaged && kind == 2) { engaged = r_pack_count(e, u32(best)) >= RW_PACK_NEED; }
+  if (engaged) {
     let dx = r_f[u32(best) * R_S + RX_X] - ex;
     let dy = r_f[u32(best) * R_S + RX_Y] - ey;
-    let close = (range * 3) / 4;
-    if (bestD2 > close * close) { r_toward(e, dx, dy); }
+    if (kind == 3) {
+      if (bestD2 > RW_CASTER_FAR * RW_CASTER_FAR) { r_toward(e, dx, dy); }
+      else if (bestD2 < RW_CASTER_NEAR * RW_CASTER_NEAR) { r_toward(e, -dx, -dy); }
+    } else if (bestD2 > ((range * 3) / 4) * ((range * 3) / 4)) { r_toward(e, dx, dy); }
     r_try_attack(e, style, false);
   } else {
     if (r_is_boss(e) && ((tick + e) & 63u) == 0u) {
@@ -1032,7 +1339,11 @@ fn r_mob_decide(e: u32, tick: u32) {
 
 fn r_move(e: u32, tick: u32) {
   let b = e * R_S;
+  if (e < RW_PLAYERS && r_atk_c(e) == 1 && r_atk_s(e) == 2) { r_blink(e, u32(r_atk_t(e))); }
   let sprint = e < RW_PLAYERS && r_f[b + RX_SPRINT] == 1;
+  if (e < RW_PLAYERS && r_act[e] == RA_ATTACK && r_atk_s(e) == 1 && r_tier_of(e, 1u) >= 3) {
+    r_set_ctl(e, -r_ctlx(e), -r_ctly(e));
+  }
   var base = 24;
   if (e < RW_PLAYERS) { base = 26; }
   else if (e < RW_ANIMAL0) { base = 20; }
@@ -1165,6 +1476,61 @@ fn r_participant(p: u32, v: u32, tick: u32) -> bool {
   return r_act[p] == RA_ATTACK && r_atk_t(p) == i32(v);
 }
 
+fn r_trade_d2(e: u32, p: u32) -> i32 {
+  let dx = r_f[p * R_S + RX_X] - r_f[e * R_S + RX_X];
+  let dy = r_f[p * R_S + RX_Y] - r_f[e * R_S + RX_Y];
+  return dx * dx + dy * dy;
+}
+
+fn r_trade_partner(e: u32) -> i32 {
+  if (e >= r_brain) { return -1; }
+  for (var j = 0u; j < r_brain; j = j + 1u) {
+    if (j == e || !r_alive(j)) { continue; }
+    if (r_trade_d2(e, j) < RW_TRADE_RANGE2) { return i32(j); }
+  }
+  return -1;
+}
+
+fn r_trade_deficit(e: u32) -> i32 {
+  let b = e * R_S;
+  return 200 - r_f[b + RX_FOOD] - r_f[b + RX_WATER];
+}
+
+fn r_trade_plan(t: u32) {
+  if (t < 8u) { atomicStore(&r_trade[t], 0u); }
+  workgroupBarrier();
+  if (t >= r_brain || !r_alive(t)) { return; }
+  let p = r_trade_partner(t);
+  if (p < 0 || r_trade_partner(u32(p)) != i32(t)) { return; }
+  let pu = u32(p);
+  if (r_act[t] != RA_INTERACT && r_act[pu] != RA_INTERACT) { return; }
+  let de = r_trade_deficit(t);
+  let dp = r_trade_deficit(pu);
+  let recvIsE = de > dp || (de == dp && i32(t) < p);
+  let giver = select(t, pu, recvIsE);
+  let recv = select(pu, t, recvIsE);
+  let ok = r_f[giver * R_S + RX_RAT] > 0 && r_f[recv * R_S + RX_RAT] < RW_RAT_CAP && r_f[recv * R_S + RX_GOLD] >= RW_TRADE_PRICE;
+  var bits = u32(p + 1);
+  if (recvIsE) { bits = bits | 64u; }
+  if (ok) { bits = bits | 128u; }
+  atomicOr(&r_trade[t >> 2u], bits << ((t & 3u) * 8u));
+}
+
+fn r_trade_apply(t: u32) {
+  if (t >= r_brain || !r_alive(t)) { return; }
+  let byte = (atomicLoad(&r_trade[t >> 2u]) >> ((t & 3u) * 8u)) & 255u;
+  if (byte == 0u || (byte & 128u) == 0u) { return; }
+  let b = t * R_S;
+  if ((byte & 64u) != 0u) {
+    r_f[b + RX_GOLD] = r_f[b + RX_GOLD] - RW_TRADE_PRICE;
+    r_f[b + RX_RAT] = min(RW_RAT_CAP, r_f[b + RX_RAT] + 1);
+  } else {
+    r_f[b + RX_RAT] = r_f[b + RX_RAT] - 1;
+    r_f[b + RX_GOLD] = r_f[b + RX_GOLD] + RW_TRADE_PRICE;
+  }
+  r_add(t, RW_CH_COOP, RW_TRADE_REWARD);
+}
+
 fn r_interact(e: u32) {
   let b = e * R_S;
   let action = r_act[e];
@@ -1272,10 +1638,34 @@ fn r_damage(v: u32, tick: u32) {
       if (bits == 0u) { break; }
       let a = w * 32u + firstTrailingBit(bits);
       bits = bits & (bits - 1u);
-      if (r_act[a] != RA_ATTACK || r_atk_t(a) != i32(v) || !r_alive(a)) { continue; }
-      if (a >= RW_PLAYERS) { fromMobs += r_atk_d(a); }
-      else { incoming += r_atk_d(a); }
+      if (r_act[a] != RA_ATTACK || !r_alive(a)) { continue; }
+      if (r_atk_t(a) == i32(v)) {
+        if (a >= RW_PLAYERS) { fromMobs += r_atk_d(a); }
+        else { incoming += r_atk_d(a); }
+      } else if (r_atk_c(a) == 1 && r_atk_s(a) == 0 && (a < RW_PLAYERS) != (v < RW_PLAYERS)) {
+        let dx = r_f[vb + RX_X] - r_f[a * R_S + RX_X];
+        let dy = r_f[vb + RX_Y] - r_f[a * R_S + RX_Y];
+        if (dx * dx + dy * dy > RW_SHOCK_RADIUS * RW_SHOCK_RADIUS) { continue; }
+        if (a >= RW_PLAYERS) { fromMobs += r_atk_d(a); }
+        else { incoming += r_atk_d(a); }
+      } else { continue; }
       if (r_atk_d(a) > best) { best = r_atk_d(a); killer = i32(a); }
+    }
+  }
+  if (v < RW_PLAYERS) {
+    let vx = r_f[vb + RX_X];
+    let vy = r_f[vb + RX_Y];
+    for (var j = RW_BOSS0; j < RW_ANIMAL0; j = j + 1u) {
+      if (!r_alive(j)) { continue; }
+      let ph = r_boss_phase(j);
+      if (ph < 2) { continue; }
+      let dx = r_f[j * R_S + RX_X] - vx;
+      let dy = r_f[j * R_S + RX_Y] - vy;
+      let ar = r_aura_range(ph);
+      if (dx * dx + dy * dy > ar * ar) { continue; }
+      let ad = r_aura_damage(ph);
+      fromMobs = fromMobs + ad;
+      if (ad > best) { best = ad; killer = i32(j); }
     }
   }
   var guard = 0;
@@ -1284,8 +1674,9 @@ fn r_damage(v: u32, tick: u32) {
     guard = RW_GUARD_PCT * min(RW_GUARD_CAP, r_ally[v]);
   }
   var armor = 0;
-  if (v < RW_PLAYERS) { armor = RW_ARMOR_PCT * r_f[vb + RX_TOOL]; }
+  if (v < RW_PLAYERS) { armor = RW_ARMOR_PCT * r_f[vb + RX_TOOL] + select(0, RW_BULWARK_PCT, r_tier_of(v, 0u) >= 3); }
   incoming += (((fromMobs * (100 - guard)) / 100) * (100 - armor)) / 100;
+  if (v < RW_PLAYERS && r_tier_of(v, 2u) >= 2) { incoming = (incoming * (100 - RW_WARD_PCT)) / 100; }
   r_inc[v] = incoming;
   r_kill[v] = killer;
   r_dies[v] = select(0, 1, r_f[vb + RX_HP] - incoming <= 0);
@@ -1412,6 +1803,7 @@ fn r_apply(e: u32, tick: u32) {
     let xp = max(1, r_atk_d(e) >> 1u);
     r_f[b + RX_STYLE] = style;
     r_gain_xp(e, RX_XP0 + u32(style), xp, RW_CH_COMBAT);
+    if (e < r_brain) { stat_add(RS_ATK_MELEE + u32(style), 1); }
   }
   let anyDie = atomicLoad(&r_anydie) != 0u;
   if (e < RW_PLAYERS) {
@@ -1538,7 +1930,7 @@ fn g_step(t: u32, tick: u32) {
   if (t < RW_PLAYERS) { r_sunit[t] = 0; }
   if (t < RW_PLAYERS && r_alive(t)) { r_shape(t, tick); }
   atomicStore(&obsBuf[t], RW_KEY_NONE);
-  if (t < 32u) { atomicStore(&obsBuf[64u + t], RW_KEY_NONE); }
+  if (t < 48u) { atomicStore(&obsBuf[64u + t], RW_KEY_NONE); }
   workgroupBarrier();
   r_bot_prescan(t, tick);
   workgroupBarrier();
@@ -1557,6 +1949,10 @@ fn g_step(t: u32, tick: u32) {
   r_channel(t);
   workgroupBarrier();
   r_great(t);
+  workgroupBarrier();
+  r_trade_plan(t);
+  workgroupBarrier();
+  r_trade_apply(t);
   workgroupBarrier();
   if (t < RW_PLAYERS && r_alive(t)) { r_interact(t); }
   workgroupBarrier();
@@ -1590,6 +1986,7 @@ fn g_load(wi: u32, t: u32) {
     r_hunger = i32(game_word(wi, RW_CFG_OFF + 2u));
     r_pvp = i32(game_word(wi, RW_CFG_OFF + 3u));
     r_slots = i32(game_word(wi, RW_SLOTS_OFF));
+    r_gate_shift = game_word(wi, RW_GATE_OFF);
     r_brain = min(u32(r_slots), LEARNERS);
   }
 }
@@ -1633,6 +2030,7 @@ fn g_init(wi: u32, seed: u32, is_eval: u32, randomize: u32, t: u32) {
     game_set(wi, RW_CFG_OFF + 2u, hunger);
     game_set(wi, RW_CFG_OFF + 3u, pvp);
     game_set(wi, RW_SLOTS_OFF, slots);
+    game_set(wi, RW_GATE_OFF, select(0u, mix4(seed, 5u, 0u, 8u) % 3u, world_style_gate() != 0u));
   }
   if (t < 8u) { r_sat[t] = 0; }
   if (t < 64u) { r_rc[t] = 0; }

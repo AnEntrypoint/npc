@@ -1,4 +1,6 @@
 import { rlLayout, RL_GAIN, RL_LEAK_MAX, RL_OBS_CLIP, RL_POP_MAX, RL_POP_WEIGHT_SLOTS } from './rl.js';
+import { NSTATS, STAT, STATS_OFF, WORLD_HDR_WORDS } from './core.js';
+const STAT_CONSTS = Object.keys(STAT).map((k) => `const STAT_${k}: u32 = ${STAT[k]}u;`).join('\n');
 export { RL_POP_MAX, RL_POP_WEIGHT_SLOTS };
 
 export const RL_BINDINGS = { theta: 0, world: 1, obs: 2, rec: 3, lane: 4, partials: 5, opt: 6, statsOut: 7, uniforms: 8 };
@@ -9,7 +11,8 @@ export const RL_POP_GROUP = { TRAIN: 0, EVAL_PURE: 1, EVAL_B_LIVE: 2, EVAL_B_SNA
 export const RL_CTL = { STEP: 0, SCALE: 1, ADV_MEAN: 2, ADV_INV_STD: 3, GRAD_NORM: 4, POLICY: 5, VALUE: 6, ENTROPY: 7, CLIP: 8, KL: 9, RET_STD: 10, ADV_STD: 11, ITER: 12, STEPS: 13, RET_MEAN: 14, ACTIVE: 15, NCOUNT: 16, SIZE: 32 };
 export const RL_LANE = { LIFE: 0, SCORE: 1, VALID: 2, BOOT: 3, ROLE: 4, BASE: 5, POL: 6, ACC: 8, HEADER: 12 };
 export const RL_ROLE = { INACTIVE: 0, LIVE: 1, SNAPSHOT: 2 };
-export const RL_STATS = { GROUPS: 4, ROLE_WORDS: 4, ROLE_OFFSET: 64, WORLD_OFFSET: 72 };
+export const RL_STATS = { GROUPS: 4, ROLE_WORDS: 4, ROLE_OFFSET: 4 * NSTATS, WORLD_OFFSET: 4 * NSTATS + 4 + 4 };
+export const RL_STATS_ROWS = 4 * NSTATS + 4;
 
 export const RL_NORM_GROUPS = 64;
 
@@ -90,7 +93,7 @@ export function rlShaderLayout(game, cfg) {
   const hiddenStride = hidden | 1;
   const poolSize = cfg.poolSize || 0;
   const policies = Math.max(1, Math.min(RL_POP_MAX, Math.round(cfg.policies || 1)));
-  const popStatFloats = policies > 1 ? RL_POP_STAT_GROUPS * policies * 4 + (policies + 1) * 16 : 0;
+  const popStatFloats = policies > 1 ? RL_POP_STAT_GROUPS * policies * 4 + (policies + 1) * NSTATS : 0;
   const normOpt = features.obsNorm ? 2 * nIn : 0;
   const optStride = 2 * L.count + RL_CTL.SIZE + normOpt + RL_POP_WEIGHT_SLOTS;
   const optWeights = optStride - RL_POP_WEIGHT_SLOTS;
@@ -105,17 +108,17 @@ export function rlShaderLayout(game, cfg) {
   const seqScratch = blockGrad ? blockStride : features.recurrent ? 2 * entriesPerLearner * hidden : 0;
   const scratchBase = (groups + 1) * L.partialStride + normPartFloats;
   const selBase = scratchBase + groups * seqScratch;
-  const rolloutBytes = (learners * (obsStride + nOut + 6) + 2 * game.agents + 20 + 4 + 3) * 4 + game.workgroupBytes;
+  const rolloutBytes = (learners * (obsStride + nOut + 6) + 2 * game.agents + NSTATS + RL_STATS.ROLE_WORDS + 4 + 3) * 4 + game.workgroupBytes;
   const T = cfg.rolloutTicks;
   const tileBytes = (tile * (obsStride + 2 * hiddenStride + 3 * nOut + 2) + tile * 8 + tile + 256 + 1) * 4;
   const seqBytes = (2 * (obsStride + 4 * hiddenStride) + 2 * T * nOut + 3 * (T + 1) + T * 8 + 8) * 4;
-  const blockBytes = ((entriesPerLearner * 4 + 2 * hidden * 4 + nIn * 4 + nOut * 4 + 4) * 16) + (16 + 16 + 1) * 4 + 256 * 4;
+  const blockBytes = Math.ceil((16 * (entriesPerLearner * 4 + 2 * hidden * 4 + nIn * 4 + nOut * 4 + 4 + Math.ceil(nOut / 4) * hidden + Math.ceil(hidden / 4)) + (16 + 16 + 1) * 4) / 16) * 16;
   const gradBytes = blockGrad ? blockBytes : features.recurrent ? seqBytes : tileBytes;
   return {
     nIn, nOut, hidden, learners, agents: game.agents, params: L, features, lanes, trainWorlds, trainLearners, worlds: cfg.worlds, tile, entriesPerLearner, tilesPerLearner,
     evalBStart: cfg.evalBStart, evalCStart: cfg.evalCStart, poolSize, hiddenBuffers, obsLearnerStride, normSlices, normPartFloats, seqScratch, scratchBase,
     laneStride, partFloats, accumulators, obsStride, hiddenStride, rolloutTicks: cfg.rolloutTicks, gradGroups: groups, blockGrad, blockHalves, blockThreads, selBase,
-    worldStride: 24 + game.worldWords, recStride: L.recStride, partialStride: L.partialStride,
+    worldStride: WORLD_HDR_WORDS + game.worldWords, recStride: L.recStride, partialStride: L.partialStride,
     obsFloats: trainLearners * obsLearnerStride, recFloats: recBlocks * cfg.rolloutTicks * L.recStride, recBlocks,
     thetaFloats: (policies + policies * poolSize) * L.count,
     policies, optStride, optWeights, popStatFloats, popOffset: RL_STATS.WORLD_OFFSET + cfg.worlds * 2,
@@ -598,8 +601,8 @@ fn rl_reduce_pop(@builtin(local_invocation_index) t: u32) {
   }
   for (var w = EVAL_START + t; w < EVAL_B_START; w += 64u) {
     let sg = (w - EVAL_START) % (POPK + 1u);
-    for (var i = 0u; i < 16u; i++) {
-      mine[POP_GROUPS * POPK * 4u + sg * 16u + i] += bitcast<i32>(world[w * WSTRIDE + STATS_OFF + i]);
+    for (var i = 0u; i < ${NSTATS}u; i++) {
+      mine[POP_GROUPS * POPK * 4u + sg * ${NSTATS}u + i] += bitcast<i32>(world[w * WSTRIDE + STATS_OFF + i]);
     }
   }
   for (var c0 = 0u; c0 < POP_TOTAL; c0 += 16u) {
@@ -682,9 +685,10 @@ const QL: u32 = ${S.lanes}u;
 const MAX_AGE: f32 = ${maxAge}.0;
 const TRAIN_AGE: f32 = ${trainAge}.0;
 const WSTRIDE: u32 = ${S.worldStride}u;
-const STATS_OFF: u32 = 8u;
+const STATS_OFF: u32 = ${STATS_OFF}u;
+const NSTATS: u32 = ${NSTATS}u;
 const ROLE_STATS_WORD: u32 = 3u;
-const GAME_OFF: u32 = 24u;
+const GAME_OFF: u32 = ${WORLD_HDR_WORDS}u;
 const GAIN: f32 = ${lit(RL_GAIN)};
 const BIAS: u32 = ${F.bias ? 1 : 0}u;
 const RECUR: u32 = ${F.recurrent ? 1 : 0}u;
@@ -778,16 +782,7 @@ const STATS_ROLE_OFF: u32 = ${RL_STATS.ROLE_OFFSET}u;
 const STATS_WORLD_OFF: u32 = ${RL_STATS.WORLD_OFFSET}u;
 const NEG_INF: f32 = -1e30;
 const REWARD_SCALE: f32 = 1024.0;
-const STAT_REW_EVO: u32 = 0u;
-const STAT_REW_BASE: u32 = 1u;
-const STAT_TICKS_EVO: u32 = 2u;
-const STAT_TICKS_BASE: u32 = 3u;
-const STAT_OPS_EVO: u32 = 4u;
-const STAT_BIRTHS: u32 = 5u;
-const STAT_DEATHS: u32 = 6u;
-const STAT_LIFE_FIT: u32 = 7u;
-const STAT_EDGES: u32 = 8u;
-const STAT_GAME0: u32 = 9u;
+${STAT_CONSTS}
 const EVAL_RESET: u32 = 1u;
 
 struct Uniforms {
@@ -819,8 +814,8 @@ struct Uniforms {
   leagueOn: u32,
   spOn: u32,
   spFraction: f32,
-  pad2: u32,
-  pad3: u32,
+  styleGate: u32,
+  styleGateEval: u32,
   pad4: u32,
   pad5: u32,
   policy: u32,
@@ -850,7 +845,7 @@ var<workgroup> obsBuf: array<atomic<u32>, ${S.learners * S.obsStride}>;
 var<workgroup> outBuf: array<f32, ${S.learners * S.nOut}>;
 var<workgroup> rewardBuf: array<i32, ${S.agents}>;
 var<workgroup> deadBuf: array<u32, ${S.agents}>;
-var<workgroup> statAcc: array<atomic<i32>, 20>;
+var<workgroup> statAcc: array<atomic<i32>, ${NSTATS + RL_STATS.ROLE_WORDS}>;
 var<workgroup> deadCount: atomic<u32>;
 var<workgroup> truncCount: atomic<u32>;
 var<workgroup> ndShared: u32;
@@ -903,6 +898,7 @@ fn rl_softsign(x: f32) -> f32 { return x / (1.0 + abs(x)); }
 fn rl_slope(h: f32) -> f32 { let s = 1.0 - abs(h); return GAIN * s * s; }
 
 fn world_difficulty() -> i32 { return select(i32(U.difficulty), 100, w_eval == 1u); }
+fn world_style_gate() -> u32 { return select(0u, U.styleGate, w_eval == 0u || U.styleGateEval == 1u); }
 fn action_of(a: u32) -> u32 { return 0u; }
 fn out_of(a: u32, k: u32) -> f32 { return outBuf[a * NOUT + k]; }
 fn set_obs(a: u32, i: u32, v: f32) { atomicStore(&obsBuf[a * OSTR + i], bitcast<u32>(v)); }
@@ -926,7 +922,7 @@ fn rl_load_header(wi: u32) {
 }
 
 fn rl_stat_flush(wi: u32) {
-  for (var i = 0u; i < 16u; i++) {
+  for (var i = 0u; i < NSTATS; i++) {
     let idx = wi * WSTRIDE + STATS_OFF + i;
     if (i == STAT_EDGES) {
       world[idx] = bitcast<u32>(atomicLoad(&statAcc[i]));
@@ -936,7 +932,7 @@ fn rl_stat_flush(wi: u32) {
   }
   for (var i = 0u; i < 4u; i++) {
     let idx = wi * WSTRIDE + ROLE_STATS_WORD + i;
-    world[idx] = bitcast<u32>(bitcast<i32>(world[idx]) + atomicLoad(&statAcc[16u + i]));
+    world[idx] = bitcast<u32>(bitcast<i32>(world[idx]) + atomicLoad(&statAcc[NSTATS + i]));
   }
 }
 
@@ -1083,7 +1079,7 @@ fn rl_init_world(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id)
     world[wi * WSTRIDE + 1u] = select(0u, 1u, wi >= EVAL_START);
     world[wi * WSTRIDE + 2u] = select(0u, 1u, rl_world_selfplay(wi));
     for (var i = 0u; i < 5u; i++) { world[wi * WSTRIDE + ROLE_STATS_WORD + i] = 0u; }
-    for (var i = 0u; i < 16u; i++) { world[wi * WSTRIDE + STATS_OFF + i] = 0u; }
+    for (var i = 0u; i < NSTATS; i++) { world[wi * WSTRIDE + STATS_OFF + i] = 0u; }
   }
   workgroupBarrier();
   rl_load_header(wi);
@@ -1117,7 +1113,7 @@ fn rl_reinit_world(@builtin(local_invocation_index) t: u32, @builtin(workgroup_i
 fn rl_rollout(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg: vec3<u32>) {
   let wi = wg.x;
   rl_load_header(wi);
-  if (t < 20u) { atomicStore(&statAcc[t], 0); }
+  if (t < ${NSTATS + RL_STATS.ROLE_WORDS}u) { atomicStore(&statAcc[t], 0); }
   if (t == 0u) { atomicStore(&deadCount, 0u); atomicStore(&truncCount, 0u); }
   workgroupBarrier();
   g_load(wi, t);
@@ -1287,7 +1283,7 @@ fn rl_rollout(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg
           atomicAdd(&statAcc[STAT_OPS_EVO], DENSE_EDGES);
         }
         if (kindB && U.poolValid > 0u) {
-          let slot = select(18u, 16u, role == ROLE_LIVE);
+          let slot = NSTATS + select(2u, 0u, role == ROLE_LIVE);
           atomicAdd(&statAcc[slot], rewardFx);
           atomicAdd(&statAcc[slot + 1u], 1);
         }
@@ -2093,23 +2089,23 @@ fn rl_normapply(@builtin(local_invocation_index) tid: u32) {
   if (tid == 0u) { opt[OB + CTL + C_NCOUNT] = min(rn + nb, NORM_CAP); }
 }
 
-const STATS_ROWS: u32 = 68u;
-var<workgroup> reduceRows: array<i32, ${64 * 68}>;
+const STATS_ROWS: u32 = ${RL_STATS_ROWS}u;
+var<workgroup> reduceRows: array<i32, ${64 * RL_STATS_ROWS}>;
 
 @compute @workgroup_size(64)
 fn rl_reduce_stats(@builtin(local_invocation_index) t: u32) {
-  var mine: array<i32, 68>;
+  var mine: array<i32, ${RL_STATS_ROWS}>;
   for (var w = t; w < WORLDS; w += 64u) {
     var group = 0u;
     if (w >= EVAL_C_START) { group = 3u; } else if (w >= EVAL_B_START) { group = 2u; } else if (w >= EVAL_START) { group = 1u; }
     let base = w * WSTRIDE + STATS_OFF;
-    for (var i = 0u; i < 16u; i++) { mine[group * 16u + i] += bitcast<i32>(world[base + i]); }
+    for (var i = 0u; i < NSTATS; i++) { mine[group * NSTATS + i] += bitcast<i32>(world[base + i]); }
     if (group == 2u) {
       for (var i = 0u; i < 4u; i++) { mine[STATS_ROLE_OFF + i] += bitcast<i32>(world[w * WSTRIDE + ROLE_STATS_WORD + i]); }
     }
     statsOut[STATS_WORLD_OFF + w * 2u] = bitcast<i32>(world[base + STAT_REW_EVO]);
     statsOut[STATS_WORLD_OFF + w * 2u + 1u] = bitcast<i32>(world[base + STAT_TICKS_EVO]);
-    for (var i = 0u; i < 16u; i++) { if (i != STAT_EDGES) { world[base + i] = 0u; } }
+    for (var i = 0u; i < NSTATS; i++) { if (i != STAT_EDGES) { world[base + i] = 0u; } }
     for (var i = 0u; i < 4u; i++) { world[w * WSTRIDE + ROLE_STATS_WORD + i] = 0u; }
   }
   for (var i = 0u; i < STATS_ROWS; i++) { reduceRows[t * STATS_ROWS + i] = mine[i]; }

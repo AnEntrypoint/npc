@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
-import { Brain, Rng, mix, evoConfig, genomeFromJSON } from '../src/core.js';
+import { Brain, Rng, mix, evoConfig, genomeFromJSON, NSTATS } from '../src/core.js';
 import { RealtimeNpc } from '../runtime/npc.js';
 import * as P from '../src/prune.js';
 
@@ -52,7 +52,7 @@ function collectWorld(context, task) {
   const cfg = task.mode === 'rand' ? game.randomCfg(worldSeed) : game.defaultCfg();
   if (task.mode === 'selfplay') cfg.learnerSlots = game.maxLearners || game.learners;
   const slots = Math.min(cfg.learnerSlots || game.learners, game.maxLearners || game.learners);
-  const stats = new Int32Array(16);
+  const stats = new Int32Array(NSTATS);
   const env = game.createEnv(worldSeed, cfg, true, stats);
   env.difficulty = task.difficulty;
   const evo = evoConfig(null);
@@ -741,7 +741,7 @@ function pairedDifference(variant, reference) {
 }
 
 function sampleObservations(game, count) {
-  const env = game.createEnv(77, game.defaultCfg(), true, new Int32Array(16));
+  const env = game.createEnv(77, game.defaultCfg(), true, new Int32Array(NSTATS));
   const nIn = game.dims.nIn;
   const out = new Float32Array(count * nIn);
   const obs = new Float32Array(nIn);

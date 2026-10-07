@@ -1,4 +1,4 @@
-import { evoConfig, difficultyAt, STAT, NSTATS, REWARD_SCALE, StatsAccumulator, DEFAULT_OPTS, evalWorldCount, penaltyAt, validateGame, mergeIntoArchive, makeGenome, randomGenome, Brain, Rng, mix, genomeToJSON, genomeFromJSON, NEG_INF_FIT, VALID_FIT, ARCHIVE_SIZE, ARCHIVE_DECAY_PER_TICK, STRUCT_PERIOD, NODE_BITS, NODE_MASK, PARAM_LO, PARAM_HI, CpuBackend } from './core.js';
+import { evoConfig, difficultyAt, STAT, NSTATS, WORLD_HDR_WORDS, REWARD_SCALE, StatsAccumulator, DEFAULT_OPTS, evalWorldCount, penaltyAt, validateGame, mergeIntoArchive, makeGenome, randomGenome, Brain, Rng, mix, genomeToJSON, genomeFromJSON, NEG_INF_FIT, VALID_FIT, ARCHIVE_SIZE, ARCHIVE_DECAY_PER_TICK, STRUCT_PERIOD, NODE_BITS, NODE_MASK, PARAM_LO, PARAM_HI, CpuBackend } from './core.js';
 import { buildShader, shaderLayout, UNIFORM_WORDS, BRAIN_STATE } from './shader.js';
 
 const GPU_ENTRIES = ['init_world', 'sim_step', 'select_archive', 'reduce_stats', 'brain_test', 'env_test', 'observe_test'];
@@ -51,7 +51,7 @@ export function worldCapacity(ctx, game, opts) {
   const learners = game.learners;
   const genomeStride = 24 + 2 * opts.maxEdges;
   const brainStride = 20 + game.dims.nIn + 8 + game.dims.nNodes + game.dims.nOut;
-  const perWorld = [opts.maxEdges * learners * 4, learners * brainStride * 4, (24 + game.worldWords) * 4, 4 * genomeStride * 4];
+  const perWorld = [opts.maxEdges * learners * 4, learners * brainStride * 4, (WORLD_HDR_WORDS + game.worldWords) * 4, 4 * genomeStride * 4];
   return Math.floor(Math.min(...perWorld.map((bytes) => limit / bytes)));
 }
 
@@ -240,6 +240,8 @@ export class GpuBackend {
     u[11] = v.migrate ? 1 : 0;
     u[12] = o.migrateCount;
     u[13] = v.difficulty !== undefined ? v.difficulty : adaptedDifficulty(this, o);
+    u[14] = o.styleGate | 0;
+    u[15] = o.styleGateEval | 0;
     this.device.queue.writeBuffer(this.buffers.uniforms, 0, this.uniformData);
   }
 
@@ -393,12 +395,12 @@ export class GpuBackend {
       const base = island * L.statsPerIsland;
       for (let i = 0; i < NSTATS; i++) {
         train[i] += rows[base + i];
-        evalDelta[i] += rows[base + 16 + i];
+        evalDelta[i] += rows[base + NSTATS + i];
       }
-      const count = rows[base + 32] >>> 0;
+      const count = rows[base + 2 * NSTATS] >>> 0;
       if (count > 0) {
-        bestFit = Math.max(bestFit, rowsF[base + 33]);
-        fitSum += rowsF[base + 34] * count;
+        bestFit = Math.max(bestFit, rowsF[base + 2 * NSTATS + 1]);
+        fitSum += rowsF[base + 2 * NSTATS + 2] * count;
         archiveCount += count;
       }
     }
@@ -426,7 +428,7 @@ export class GpuBackend {
   async snapshot(worldIndex) {
     const L = this.layout;
     const all = new Uint32Array(await this.readWords(this.buffers.world, worldIndex * L.worldStride * 4, L.worldStride * 4));
-    return this.game.snapshotFromWords(all.slice(24, 24 + this.game.worldWords), all[0]);
+    return this.game.snapshotFromWords(all.slice(WORLD_HDR_WORDS, WORLD_HDR_WORDS + this.game.worldWords), all[0]);
   }
 
   currentArchiveBuffer() {
@@ -637,11 +639,11 @@ export class GpuBackend {
         const words = new Uint32Array(await tmp.readWords(tmp.buffers.world, w * L.worldStride * 4, L.worldStride * 4));
         const seed = words[0];
         const isEval = words[1] === 1;
-        const cfg = tmp.opts.randomize && !isEval ? game.randomCfg(seed) : game.defaultCfg();
+        const cfg = tmp.opts.randomize && !isEval ? game.randomCfg(seed, tmp.opts) : game.defaultCfg(tmp.opts);
         const env = game.createEnv(seed, cfg, isEval, new Int32Array(NSTATS));
         const expected = game.packEnv(env);
         for (let i = 0; i < expected.length; i++) {
-          if (words[24 + i] !== expected[i]) throw new Error('world ' + w + ' word ' + i + ': gpu ' + words[24 + i] + ' js ' + expected[i]);
+          if (words[WORLD_HDR_WORDS + i] !== expected[i]) throw new Error('world ' + w + ' word ' + i + ': gpu ' + words[WORLD_HDR_WORDS + i] + ' js ' + expected[i]);
         }
         checked++;
       }
@@ -662,10 +664,10 @@ export class GpuBackend {
       const header = new Uint32Array(await tmp.readWords(tmp.buffers.world, 0, worldBytes));
       const seed = header[0];
       const stats = new Int32Array(NSTATS);
-      const env = game.createEnv(seed, game.randomCfg(seed), false, stats);
+      const env = game.createEnv(seed, game.randomCfg(seed, tmp.opts), false, stats);
       if (dense) {
         game.densify(env, new Rng(99));
-        this.device.queue.writeBuffer(tmp.buffers.world, 24 * 4, game.packEnv(env));
+        this.device.queue.writeBuffer(tmp.buffers.world, WORLD_HDR_WORDS * 4, game.packEnv(env));
         await this.device.queue.onSubmittedWorkDone();
       }
       const policyRng = new Rng(2024);
@@ -687,10 +689,14 @@ export class GpuBackend {
         await tmp.submit(encoder);
         env.step(actions, outputs, k);
         for (let a = 0; a < game.learners; a++) if (env.dead[a]) env.respawn(a, k);
-        const gpuWords = new Uint32Array(await tmp.readWords(tmp.buffers.world, 24 * 4, game.worldWords * 4));
+        const gpuWords = new Uint32Array(await tmp.readWords(tmp.buffers.world, WORLD_HDR_WORDS * 4, game.worldWords * 4));
         const expected = game.packEnv(env);
         for (let i = 0; i < expected.length; i++) {
-          if (gpuWords[i] !== expected[i]) throw new Error('diverged at tick ' + k + ' word ' + i + ': gpu ' + (gpuWords[i] | 0) + ' js ' + (expected[i] | 0));
+          if (gpuWords[i] !== expected[i]) {
+            const label = game.wordLabel ? game.wordLabel(i) : 'word ' + i;
+            const row = game.wordRow ? ' | ' + game.wordRow(i, gpuWords, expected) : '';
+            throw new Error('diverged at tick ' + k + ' ' + label + ': gpu ' + (gpuWords[i] | 0) + ' js ' + (expected[i] | 0) + row);
+          }
         }
       }
       return ticks + ' ticks identical word for word (' + game.worldWords + ' words per tick)' + (dense ? ', game events ' + game.statNames.map((name, i) => name + ' ' + stats[STAT.GAME0 + i]).join(', ') : '');
@@ -710,11 +716,11 @@ export class GpuBackend {
       const expected = new Float32Array(dims.nIn);
       let compared = 0;
       for (const dense of [false, true]) {
-        const env = game.createEnv(seed, game.randomCfg(seed), false, new Int32Array(NSTATS));
+        const env = game.createEnv(seed, game.randomCfg(seed, tmp.opts), false, new Int32Array(NSTATS));
         if (dense && game.densify) game.densify(env, new Rng(5));
         const actions = new Int32Array(game.learners);
         for (let k = 0; k < 30; k++) env.step(actions, this.policyOutputs(rng, game.learners, dims.nOut), 1000 + k);
-        this.device.queue.writeBuffer(tmp.buffers.world, 24 * 4, game.packEnv(env));
+        this.device.queue.writeBuffer(tmp.buffers.world, WORLD_HDR_WORDS * 4, game.packEnv(env));
         for (const tick of [7, 2500, 3599, 3600 + 2450]) {
           tmp.writeUniforms({ ticks: 0, tick0: tick });
           const encoder = tmp.device.createCommandEncoder();
@@ -767,7 +773,7 @@ export class GpuBackend {
         for (let j = 0; j < dims.nNodes; j++) if (!Number.isFinite(brain[bb + L.brainOffAct + j])) throw new Error('brain ' + b + ' activation NaN');
       }
       for (let wi = 0; wi < tmp.opts.worlds; wi++) {
-        const words = new Uint32Array(await tmp.readWords(tmp.buffers.world, (wi * L.worldStride + 24) * 4, game.worldWords * 4));
+        const words = new Uint32Array(await tmp.readWords(tmp.buffers.world, (wi * L.worldStride + WORLD_HDR_WORDS) * 4, game.worldWords * 4));
         const problems = game.validateWords(words);
         if (problems.length) throw new Error('world ' + wi + ': ' + problems.slice(0, 3).join('; '));
       }

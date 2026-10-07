@@ -21,9 +21,10 @@ const R_SAT_OFF = 2564;
 const R_SATO_OFF = 2601;
 const R_GPROG_OFF = 2568;
 const R_SLOTS_OFF = 2600;
+const R_GATE_OFF = 2605;
 const R_CH_OFF = 2608;
 const R_WORDS = 2736;
-const R_NOUT = 12;
+const R_NOUT = 13;
 const BOSS_LAST_GOLD = 30;
 const GREAT_PROGRESS_NEED = 60;
 const GREAT_PROGRESS_CAP = 90;
@@ -49,6 +50,7 @@ const RAID_RADIUS = 2600;
 const MARKET_FLOOR = 30;
 const MARKET_CAP = 150;
 const MARKET_DECAY = 6;
+const TOWN_BIAS = 35;
 const ALIVE_REWARD = 1;
 const GREAT_REWARD = 1024;
 const BOSS_RARE = 2;
@@ -109,13 +111,32 @@ const N_BERRY = 0, N_TREE = 1, N_ORE = 2, N_SPRING = 3, N_TOWN = 4, N_NONE = 7;
 const NODE_FIRST_TOWN = 200;
 const CLASSES = 9;
 const CLASS_BOSS = 9;
+const CLASS_ANIMAL = 6;
 const NEAR_SLOTS = 10;
 
 const F = { X: 0, Y: 1, VX: 2, VY: 3, HP: 4, FOOD: 5, WATER: 6, CD: 7, CHAN: 8, STYLE: 9, XP0: 10, XP1: 11, XP2: 12, XP3: 13, WOOD: 14, ORE: 15, GOLD: 16, RAT: 17, TOOL: 18, WEAP: 19, AGE: 20, DEAD: 21, HX: 22, HY: 23, CHAN_NODE: 24, LAST_HIT: 25, LEVEL: 26, SPRINT: 27, RARE: 28, BOSS_ID: 29, BOSS_TICK: 30, ACH: 31 };
 const ACT = { NONE: 0, INTERACT: 1, ATTACK: 2, CRAFT_TOOL: 3, CRAFT_WEAP: 4, BUY: 5 };
-const R_STAT = { MOB_KILLS: STAT.GAME0, GREAT_HARVESTS: STAT.GAME0 + 1, BOSS_KILLS: STAT.GAME0 + 2, PVP_KILLS: STAT.GAME0 + 3, HARVESTS: STAT.GAME0 + 4, ALLY_TICKS: STAT.GAME0 + 5, PLAYER_DEATHS: STAT.GAME0 + 6 };
+const R_STAT = { MOB_KILLS: STAT.GAME0, GREAT_HARVESTS: STAT.GAME0 + 1, BOSS_KILLS: STAT.GAME0 + 2, PVP_KILLS: STAT.GAME0 + 3, HARVESTS: STAT.GAME0 + 4, ALLY_TICKS: STAT.GAME0 + 5, PLAYER_DEATHS: STAT.GAME0 + 6, ATK_MELEE: STAT.GAME0 + 7, ATK_RANGE: STAT.GAME0 + 8, ATK_MAGE: STAT.GAME0 + 9 };
 const STYLE_RANGE = [200, 800, 500];
 const STYLE_COOLDOWN = [10, 18, 24];
+const CAST_RANGE = 600;
+const CAST_COOLDOWN = 30;
+const BOLT_RANGE = 900;
+const SHOCK_RADIUS = 300;
+const BLINK_DIST = 400;
+const BOSS_AURA_RANGE = [0, 400, 500];
+const BOSS_AURA_DAMAGE = [0, 3, 5];
+const MOB_HP_SCALE = [6, 4, 4, 3, 5];
+const PACK_RADIUS = 700;
+const PACK_NEED = 2;
+const CASTER_FAR = 450;
+const CASTER_NEAR = 350;
+const STALKER_AGGRO = 600;
+const AMBUSH_AGGRO = 320;
+const CLEAVE_RADIUS = 300;
+const CLEAVE_NEED = 2;
+const WARD_PCT = 25;
+const BULWARK_PCT = 25;
 const MOB_STYLE_RANGE = [200, 700, 450];
 const PLAYER_KEY = 1000000;
 const DAY_AGGRO = 700;
@@ -125,10 +146,18 @@ const REACH_NODE = 320;
 const REACH_TOWN = 500;
 const SAFE_RADIUS = 600;
 const BOSS_FLEE = 1300;
+const BOSS_ENGAGE = 1200;
+const BOT_GREAT_RANGE = 900;
+const BOT_GATHER_RANGE = 300;
 const STEER_AHEAD = 192;
 const STEER_RAY = 20;
 const SHAPE_NEED = 50;
 const SHAPE_CLAMP = 8;
+const TRADE_RANGE = 200;
+const TRADE_RANGE2 = TRADE_RANGE * TRADE_RANGE;
+const TRADE_PRICE = 8;
+const TRADE_REWARD = 32;
+const RAT_CAP = 4;
 
 export function realmIsqrt(x) {
   return Math.floor(Math.sqrt(x));
@@ -173,6 +202,7 @@ export class RealmEnv {
     this.isEval = isEval;
     this.stats = stats;
     this.difficulty = 100;
+    this.gateShift = (cfg.styleGate && (!isEval || cfg.styleGateEval)) ? mix(this.seed, 5, 0, 8) % 3 : 0;
     this.gprog = new Int32Array(R_GREATS);
     this.gdone = new Int32Array(R_GREATS);
     this.gcount = new Int32Array(R_GREATS);
@@ -192,6 +222,7 @@ export class RealmEnv {
     this.atkTgt = new Int32Array(R_ENT);
     this.atkDmg = new Int32Array(R_ENT);
     this.atkStyle = new Int32Array(R_ENT);
+    this.atkCast = new Int32Array(R_ENT);
     this.complete = new Int32Array(R_ENT);
     this.incoming = new Int32Array(R_ENT);
     this.killer = new Int32Array(R_ENT);
@@ -208,8 +239,11 @@ export class RealmEnv {
     this.reward = new Int32Array(R_PLAYERS);
     this.rewardCh = new Int32Array(R_PLAYERS * R_CHANNELS);
     this.dead = new Uint8Array(R_PLAYERS);
-    this.brain = R_LEARNERS;
-    this.selfplay = false;
+    this.tp = new Int32Array(R_PLAYERS);
+    this.tradeRole = new Int32Array(R_PLAYERS);
+    this.tradeOk = new Int32Array(R_PLAYERS);
+    this.brain = this.learnerSlots;
+    this.selfplay = this.brain === R_PLAYERS;
     for (let j = 0; j < R_NODES; j++) this.placeNode(j);
     for (let e = 0; e < R_ENT; e++) this.spawn(e, 0);
   }
@@ -350,7 +384,7 @@ export class RealmEnv {
         f[b + F.LEVEL] = 1 + Math.min(7, Math.floor(realmIsqrt(this.town.d2) / 600));
         f[b + F.STYLE] = e % 3;
       } else f[b + F.LEVEL] = 1;
-      f[b + F.HP] = e < R_ANIMAL0 ? 30 + 15 * f[b + F.LEVEL] : 20;
+      f[b + F.HP] = e < R_ANIMAL0 ? Math.trunc(((30 + 15 * f[b + F.LEVEL]) * MOB_HP_SCALE[this.mobKind(e)]) / 4) : 20;
     }
     f[b + F.FOOD] = 100;
     f[b + F.WATER] = 100;
@@ -411,35 +445,37 @@ export class RealmEnv {
     const b = a * R_FIELDS;
     this.scan(a, tick, true);
     const view = this.viewRadius(tick);
-    for (let c = 0; c < CLASSES; c++) {
+    for (let c = 0, o = 0; c < CLASSES; c++) {
+      if (c === CLASS_ANIMAL) continue;
       for (let s = 0; s < 8; s++) {
         const d2 = this.sec[c * 8 + s];
-        out[c * 8 + s] = d2 >= view * view ? 0 : (view - realmIsqrt(d2)) * (1 / 2048);
+        out[o * 8 + s] = d2 >= view * view ? 0 : (view - realmIsqrt(d2)) * (1 / 2048);
       }
+      o++;
     }
     this.nearestTown(a);
     const l0 = levelOf(f[b + F.XP0]), l1 = levelOf(f[b + F.XP1]), l2 = levelOf(f[b + F.XP2]);
-    out[72] = f[b + F.HP] * (1 / 256);
-    out[73] = f[b + F.FOOD] * (1 / 128);
-    out[74] = f[b + F.WATER] * (1 / 128);
-    out[75] = l0 * (1 / 16);
-    out[76] = l1 * (1 / 16);
-    out[77] = l2 * (1 / 16);
-    out[79] = f[b + F.WOOD] * (1 / 8);
-    out[80] = f[b + F.ORE] * (1 / 8);
-    out[81] = Math.min(f[b + F.GOLD], 64) * (1 / 64);
-    out[82] = f[b + F.RAT] * (1 / 4);
-    out[83] = f[b + F.TOOL] * (1 / 4);
-    out[84] = f[b + F.WEAP] * (1 / 4);
-    out[86] = isNight(tick) ? 1 : 0;
-    out[87] = this.town.d2 < REACH_TOWN * REACH_TOWN ? 1 : 0;
+    out[64] = f[b + F.HP] * (1 / 256);
+    out[65] = f[b + F.FOOD] * (1 / 128);
+    out[66] = f[b + F.WATER] * (1 / 128);
+    out[67] = l0 * (1 / 16);
+    out[68] = l1 * (1 / 16);
+    out[69] = l2 * (1 / 16);
+    out[71] = f[b + F.WOOD] * (1 / 8);
+    out[72] = f[b + F.ORE] * (1 / 8);
+    out[73] = Math.min(f[b + F.GOLD], 64) * (1 / 64);
+    out[74] = f[b + F.RAT] * (1 / 4);
+    out[75] = f[b + F.TOOL] * (1 / 4);
+    out[76] = f[b + F.WEAP] * (1 / 4);
+    out[78] = isNight(tick) ? 1 : 0;
+    out[79] = this.town.d2 < REACH_TOWN * REACH_TOWN ? 1 : 0;
     const len = realmIsqrt(this.town.dx * this.town.dx + this.town.dy * this.town.dy);
-    out[88] = len === 0 ? 0 : Math.trunc((this.town.dx * 128) / len) * (1 / 128);
-    out[89] = len === 0 ? 0 : Math.trunc((this.town.dy * 128) / len) * (1 / 128);
-    out[90] = this.allyCount(a) * (1 / 8);
-    out[91] = f[b + F.RARE] * (1 / 8);
-    out[94] = this.inSafeZone(f[b + F.X], f[b + F.Y]) ? 1 : 0;
-    out[95] = f[b + F.LAST_HIT] < 40 ? 1 : 0;
+    out[80] = len === 0 ? 0 : Math.trunc((this.town.dx * 128) / len) * (1 / 128);
+    out[81] = len === 0 ? 0 : Math.trunc((this.town.dy * 128) / len) * (1 / 128);
+    out[82] = this.allyCount(a) * (1 / 8);
+    out[83] = f[b + F.RARE] * (1 / 8);
+    out[86] = this.inSafeZone(f[b + F.X], f[b + F.Y]) ? 1 : 0;
+    out[87] = f[b + F.LAST_HIT] < 40 ? 1 : 0;
     let bossD2 = R_FAR, bossIdx = -1;
     for (let j = R_BOSS0; j < R_ANIMAL0; j++) {
       if (!this.alive(j)) continue;
@@ -448,11 +484,11 @@ export class RealmEnv {
       if (d2 < bossD2) { bossD2 = d2; bossIdx = j; }
     }
     const bossSeen = bossD2 < view * view;
-    out[96] = bossSeen ? (view - realmIsqrt(bossD2)) * (1 / 2048) : 0;
+    out[88] = bossSeen ? (view - realmIsqrt(bossD2)) * (1 / 2048) : 0;
     const resist = bossSeen ? bossResist(bossIdx) : -1;
-    out[97] = resist === 0 ? 1 : 0;
-    out[98] = resist === 1 ? 1 : 0;
-    out[99] = resist === 2 ? 1 : 0;
+    out[89] = resist === 0 ? 1 : 0;
+    out[90] = resist === 1 ? 1 : 0;
+    out[91] = resist === 2 ? 1 : 0;
     let springD2 = R_FAR, springDx = 0, springDy = 0, berryD2 = R_FAR, berryDx = 0, berryDy = 0;
     for (let j = 0; j < NODE_FIRST_TOWN; j++) {
       if (this.nodeTimer[j] !== 0) continue;
@@ -470,9 +506,9 @@ export class RealmEnv {
     const needD2 = wantSpring ? springD2 : berryD2;
     const needDx = wantSpring ? springDx : berryDx, needDy = wantSpring ? springDy : berryDy;
     const needLen = needD2 === R_FAR ? 0 : realmIsqrt(needD2);
-    out[78] = needLen === 0 ? 0 : Math.trunc((needDx * 128) / needLen) * urge * (1 / 8192);
-    out[92] = needLen === 0 ? 0 : Math.trunc((needDy * 128) / needLen) * urge * (1 / 8192);
-    out[93] = urge * (1 / 64);
+    out[70] = needLen === 0 ? 0 : Math.trunc((needDx * 128) / needLen) * urge * (1 / 8192);
+    out[84] = needLen === 0 ? 0 : Math.trunc((needDy * 128) / needLen) * urge * (1 / 8192);
+    out[85] = urge * (1 / 64);
     let greatD2 = R_FAR, greatIdx = -1;
     for (let j = R_GREAT0; j < R_GREAT_END; j++) {
       if (this.nodeTimer[j] !== 0) continue;
@@ -482,12 +518,70 @@ export class RealmEnv {
     }
     const greatSeen = greatD2 < view * view;
     const greatLen = greatSeen ? realmIsqrt(greatD2) : 0;
-    out[100] = greatSeen ? this.gprog[greatIdx - R_GREAT0] * (1 / 64) : 0;
-    out[85] = greatLen === 0 ? 0 : Math.trunc(((this.nodeX[greatIdx] - f[b + F.X]) * 128) / greatLen) * (1 / 128);
-    out[101] = greatLen === 0 ? 0 : Math.trunc(((this.nodeY[greatIdx] - f[b + F.Y]) * 128) / greatLen) * (1 / 128);
-    out[102] = this.town.d2 > FAR_ZONE * FAR_ZONE ? 1 : 0;
-    out[103] = this.price(this.sat, this.town.idx - NODE_FIRST_TOWN) * (1 / 128);
-    out[104] = this.price(this.satOre, this.town.idx - NODE_FIRST_TOWN) * (1 / 128);
+    out[92] = greatSeen ? this.gprog[greatIdx - R_GREAT0] * (1 / 64) : 0;
+    out[77] = greatLen === 0 ? 0 : Math.trunc(((this.nodeX[greatIdx] - f[b + F.X]) * 128) / greatLen) * (1 / 128);
+    out[93] = greatLen === 0 ? 0 : Math.trunc(((this.nodeY[greatIdx] - f[b + F.Y]) * 128) / greatLen) * (1 / 128);
+    out[94] = this.town.d2 > FAR_ZONE * FAR_ZONE ? 1 : 0;
+    out[95] = this.price(this.sat, this.town.idx - NODE_FIRST_TOWN, 0) * (1 / 128);
+    out[96] = this.price(this.satOre, this.town.idx - NODE_FIRST_TOWN, 1) * (1 / 128);
+    out[97] = this.inCover(f[b + F.X], f[b + F.Y]) ? 1 : 0;
+    out[98] = this.hostileTypeCode(view);
+    out[99] = bossSeen ? this.bossPhase(bossIdx) * (1 / 4) : 0;
+    out[100] = this.perkTier(a) * (1 / 4);
+    const deficit = 200 - f[b + F.FOOD] - f[b + F.WATER];
+    const afford = f[b + F.GOLD] >= TRADE_PRICE ? 1 : 0;
+    out[101] = afford * deficit * (1 / 256) - f[b + F.RAT] * (1 / 4);
+    const tp = this.tradePartner(a);
+    out[102] = tp < 0 || this.tradePartner(tp) !== a ? 0 : (TRADE_RANGE - realmIsqrt(this.tradeD2(a, tp))) * (1 / 256);
+  }
+
+  tradeD2(e, p) {
+    const f = this.f;
+    const dx = f[p * R_FIELDS + F.X] - f[e * R_FIELDS + F.X], dy = f[p * R_FIELDS + F.Y] - f[e * R_FIELDS + F.Y];
+    return dx * dx + dy * dy;
+  }
+
+  tradePartner(e) {
+    if (e >= this.brain) return -1;
+    for (let j = 0; j < this.brain; j++) {
+      if (j === e || !this.alive(j)) continue;
+      if (this.tradeD2(e, j) < TRADE_RANGE2) return j;
+    }
+    return -1;
+  }
+
+  hostileTypeCode(view) {
+    const view2 = view * view;
+    const j = this.nd2[5] < view2 ? this.nidx[5] : this.nd2[6] < view2 ? this.nidx[6] : -1;
+    if (j < 0) return 0;
+    if (isBoss(j)) return 6 * (1 / 8);
+    if (j >= R_ANIMAL0) return 7 * (1 / 8);
+    return (1 + ((j - R_MOB0) % 5)) * (1 / 8);
+  }
+
+  bossPhase(j) {
+    const hp = this.f[j * R_FIELDS + F.HP];
+    return hp * 3 > BOSS_HP * 2 ? 1 : hp * 3 > BOSS_HP ? 2 : 3;
+  }
+
+  tierOf(e, s) {
+    const lv = levelOf(this.f[e * R_FIELDS + F.XP0 + s]);
+    return lv >= 7 ? 3 : lv >= 5 ? 2 : lv >= 3 ? 1 : 0;
+  }
+
+  perkTier(a) {
+    return Math.max(this.tierOf(a, 0), this.tierOf(a, 1), this.tierOf(a, 2));
+  }
+
+  cleaveCount(ex, ey) {
+    const f = this.f;
+    let n = 0;
+    for (let j = R_MOB0; j < R_ANIMAL0; j++) {
+      if (!this.alive(j)) continue;
+      const dx = f[j * R_FIELDS + F.X] - ex, dy = f[j * R_FIELDS + F.Y] - ey;
+      if (dx * dx + dy * dy < CLEAVE_RADIUS * CLEAVE_RADIUS) n++;
+    }
+    return n;
   }
 
   toward(e, dx, dy) {
@@ -502,6 +596,13 @@ export class RealmEnv {
     this.ctlY[e] = dir[1];
   }
 
+  inCover(x, y) {
+    const cx = x >> 8, cy = y >> 8;
+    if (realmTerrain(this.seed, cx, cy) === T_FOREST) return true;
+    return realmTerrain(this.seed, (cx + 1) & 31, cy) === T_FOREST || realmTerrain(this.seed, (cx + 31) & 31, cy) === T_FOREST
+      || realmTerrain(this.seed, cx, (cy + 1) & 31) === T_FOREST || realmTerrain(this.seed, cx, (cy + 31) & 31) === T_FOREST;
+  }
+
   inSafeZone(x, y) {
     for (let j = NODE_FIRST_TOWN; j < NODE_FIRST_TOWN + 4; j++) {
       const dx = this.nodeX[j] - x, dy = this.nodeY[j] - y;
@@ -513,7 +614,11 @@ export class RealmEnv {
   attackDamage(e, style) {
     const b = e * R_FIELDS;
     if (e >= R_PLAYERS) {
-      const base = isBoss(e) ? BOSS_DAMAGE_BASE : 4 + MOB_DAMAGE_STEP * this.f[b + F.LEVEL];
+      const kind = isBoss(e) ? -1 : this.mobKind(e);
+      let base = isBoss(e) ? BOSS_DAMAGE_BASE : 4 + MOB_DAMAGE_STEP * this.f[b + F.LEVEL];
+      if (kind === 0 || kind === 4) base = (base * 3) >> 1;
+      else if (kind === 1) base = (base * 5) >> 2;
+      else if (kind === 3) base = (base * 3) >> 2;
       return Math.trunc((base * this.cfg.mobPct * damageScale(this.difficulty)) / 10000);
     }
     const weap = this.f[b + F.WEAP];
@@ -548,17 +653,100 @@ export class RealmEnv {
     if (best < 0) return false;
     let damage = this.attackDamage(e, style);
     const defenderStyle = f[best * R_FIELDS + F.STYLE];
+    const tier = e < R_PLAYERS ? this.tierOf(e, style) : 0;
     if (styleBeats(style, defenderStyle)) damage = (damage * 3) >> 1;
     else if (styleBeats(defenderStyle, style)) damage = (damage * 3) >> 2;
+    if (e < R_PLAYERS && best >= R_PLAYERS && this.inCover(ex, ey)) damage = (damage * 3) >> 1;
+    if (style === 0 && tier >= 1 && this.cleaveCount(ex, ey) >= CLEAVE_NEED) damage = (damage * 5) >> 2;
+    if (style === 0 && tier >= 2 && f[best * R_FIELDS + F.HP] * 4 < this.maxHp(best)) damage = (damage * 3) >> 1;
+    if (style === 2 && tier >= 1 && isBoss(best)) damage = (damage * 5) >> 2;
     if (e < R_PLAYERS && best < R_PLAYERS) damage >>= this.selfplay ? 1 : 2;
-    if (isBoss(best) && bossResist(best) === style) damage >>= 2;
+    if (isBoss(best)) {
+      if (this.bossPhase(best) === 3) damage = bossResist(best) === style ? 0 : (damage * 5) >> 2;
+      else if (bossResist(best) === style) damage >>= 2;
+    }
     if (isBoss(best) && e < R_PLAYERS) damage = (damage * (2 + f[b + F.WEAP])) >> 2;
     this.atkTgt[e] = best;
     this.atkDmg[e] = damage;
     this.atkStyle[e] = style;
     this.act[e] = ACT.ATTACK;
-    f[b + F.CD] = isBoss(e) ? BOSS_COOLDOWN : e >= R_PLAYERS ? 20 : STYLE_COOLDOWN[style];
+    f[b + F.CD] = isBoss(e) ? BOSS_COOLDOWN : e >= R_PLAYERS ? 20 : Math.trunc((STYLE_COOLDOWN[style] * (style === 1 && tier >= 1 ? 2 : 3)) / 3);
     return true;
+  }
+
+  castStyle(e) {
+    const f = this.f;
+    const b = e * R_FIELDS;
+    const l0 = levelOf(f[b + F.XP0]), l1 = levelOf(f[b + F.XP1]), l2 = levelOf(f[b + F.XP2]);
+    return l1 > l0 && l1 >= l2 ? 1 : l2 > l0 && l2 > l1 ? 2 : 0;
+  }
+
+  castDamage(e) {
+    const f = this.f;
+    const b = e * R_FIELDS;
+    return 7 + 3 * levelOf(f[b + F.XP0 + this.castStyle(e)]) + 3 * f[b + F.WEAP];
+  }
+
+  tryCast(e) {
+    const f = this.f;
+    const b = e * R_FIELDS;
+    if (f[b + F.CD] !== 0 || f[b + F.RARE] === 0) return false;
+    const ex = f[b + F.X], ey = f[b + F.Y];
+    const cs = this.castStyle(e);
+    const range = cs === 1 ? BOLT_RANGE : CAST_RANGE;
+    if (e < R_PLAYERS && this.inSafeZone(ex, ey)) return false;
+    let best = -1, bestKey = R_FAR;
+    for (let j = 0; j < R_ENT; j++) {
+      if (j === e || !this.alive(j)) continue;
+      if (e < R_PLAYERS) {
+        if (j < R_PLAYERS && this.cfg.pvp === 0 && !this.selfplay) continue;
+      } else if (j >= R_PLAYERS) continue;
+      const jb = j * R_FIELDS;
+      const dx = f[jb + F.X] - ex, dy = f[jb + F.Y] - ey;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > range * range) continue;
+      const key = d2 + (j < R_PLAYERS ? PLAYER_KEY : 0);
+      if (key >= bestKey) continue;
+      if (j < R_PLAYERS && this.inSafeZone(f[jb + F.X], f[jb + F.Y])) continue;
+      best = j;
+      bestKey = key;
+    }
+    if (best < 0) return false;
+    let damage = this.castDamage(e);
+    if (cs === 1) damage = (damage * 3) >> 1;
+    if (isBoss(best)) {
+      if (this.bossPhase(best) === 3) damage = bossResist(best) === cs ? 0 : (damage * 3) >> 1;
+      else if (bossResist(best) === cs) damage >>= 2;
+    }
+    if (e < R_PLAYERS && best < R_PLAYERS) damage >>= this.selfplay ? 1 : 2;
+    if (isBoss(best) && e < R_PLAYERS) damage = (damage * (2 + f[b + F.WEAP])) >> 2;
+    this.atkTgt[e] = best;
+    this.atkDmg[e] = damage;
+    this.atkStyle[e] = cs;
+    this.atkCast[e] = 1;
+    this.act[e] = ACT.ATTACK;
+    f[b + F.CD] = CAST_COOLDOWN >> (this.tierOf(e, 2) >= 3 ? 1 : 0);
+    f[b + F.RARE] -= 1;
+    return true;
+  }
+
+  shockHits(a, v) {
+    const f = this.f;
+    const ab = a * R_FIELDS, vb = v * R_FIELDS;
+    const dx = f[vb + F.X] - f[ab + F.X], dy = f[vb + F.Y] - f[ab + F.Y];
+    return dx * dx + dy * dy <= SHOCK_RADIUS * SHOCK_RADIUS;
+  }
+
+  blink(e, away) {
+    const f = this.f;
+    const b = e * R_FIELDS;
+    const dx = f[b + F.X] - f[away * R_FIELDS + F.X];
+    const dy = f[b + F.Y] - f[away * R_FIELDS + F.Y];
+    const d = realmIsqrt(dx * dx + dy * dy) || 1;
+    const nx = f[b + F.X] + Math.trunc((dx * BLINK_DIST) / d);
+    const ny = f[b + F.Y] + Math.trunc((dy * BLINK_DIST) / d);
+    if (nx >= 0 && nx <= R_WORLD - 1 && this.passableAt(nx, f[b + F.Y])) f[b + F.X] = nx;
+    if (ny >= 0 && ny <= R_WORLD - 1 && this.passableAt(f[b + F.X], ny)) f[b + F.Y] = ny;
   }
 
   nearestInteractNode(e, allowGreat) {
@@ -579,7 +767,7 @@ export class RealmEnv {
   }
 
   learnerDecide(e, outputs, tick) {
-    const base = e * 12;
+    const base = e * R_NOUT;
     const ox = Math.fround(outputs[base] - outputs[base + 1]);
     const oy = Math.fround(outputs[base + 2] - outputs[base + 3]);
     this.ctlX[e] = Math.max(-128, Math.min(128, Math.floor(ox * 128)));
@@ -588,7 +776,9 @@ export class RealmEnv {
     let style = 0;
     if (outputs[base + 7] > outputs[base + 6]) style = 1;
     if (outputs[base + 8] > outputs[base + 6 + style]) style = 2;
-    if (outputs[base + 6 + style] > 0.5 && this.tryAttack(e, style, true)) return;
+    const execStyle = (style + this.gateShift) % 3;
+    if (outputs[base + 6 + style] > 0.5 && this.tryAttack(e, execStyle, true)) return;
+    if (outputs[base + 12] > 0.5 && this.tryCast(e)) return;
     this.nearestTown(e);
     const atTown = this.town.d2 <= REACH_TOWN * REACH_TOWN;
     if (atTown && outputs[base + 9] > 0.5 && this.canCraftTool(e)) this.act[e] = ACT.CRAFT_TOOL;
@@ -640,6 +830,16 @@ export class RealmEnv {
     if (best >= 0) { this.ctlX[e] = R_DIR8[best][0]; this.ctlY[e] = R_DIR8[best][1]; }
   }
 
+  gatherAt(j, self) {
+    const nx = this.nodeX[j], ny = this.nodeY[j];
+    for (let k = 0; k < R_PLAYERS; k++) {
+      if (k === self || !this.alive(k)) continue;
+      const dx = this.f[k * R_FIELDS + F.X] - nx, dy = this.f[k * R_FIELDS + F.Y] - ny;
+      if (dx * dx + dy * dy <= BOT_GATHER_RANGE * BOT_GATHER_RANGE) return true;
+    }
+    return false;
+  }
+
   botDecide(e, tick) {
     this.botAct(e, tick);
   }
@@ -657,17 +857,31 @@ export class RealmEnv {
     let style = 0;
     if (l1 > l0) style = 1;
     if (l2 > (style === 0 ? l0 : l1)) style = 2;
-    const allowGreat = false;
+    const allowGreat = true;
     const desperate = f[b + F.WATER] < 50 || (f[b + F.FOOD] < 50 && f[b + F.RAT] === 0);
     const bossHold = nd2[CLASS_BOSS] < BOSS_FLEE * BOSS_FLEE && !desperate;
-    if (bossHold && !inTown) {
+    const animalIdx = this.nidx[6];
+    const hungry = f[b + F.FOOD] < 70 || f[b + F.RAT] < 2;
+    const safe = this.inSafeZone(f[b + F.X], f[b + F.Y]);
+    const hurt = f[b + F.HP] * 3 < this.maxHp(e);
+    const menaced = nd2[5] < 500 * 500 || nd2[CLASS_BOSS] < BOSS_FLEE * BOSS_FLEE;
+    if (!desperate && !inTown && !safe && nd2[CLASS_BOSS] < BOSS_ENGAGE * BOSS_ENGAGE
+      && f[b + F.HP] * 2 > this.maxHp(e)) {
+      if (this.tryAttack(e, style, false)) return;
+      this.botToward(e, this.ndx[CLASS_BOSS], this.ndy[CLASS_BOSS]);
+      return;
+    }
+    if (!desperate && !inTown && !safe && (bossHold || (hurt && menaced))) {
+      f[b + F.SPRINT] = 1;
       this.botToward(e, this.town.dx, this.town.dy);
       return;
     }
-    const hostile = nd2[5] < 500 * 500 && f[b + F.HP] > 50 && !this.inSafeZone(f[b + F.X], f[b + F.Y]);
-    if (hostile) {
+    if (nd2[5] < 2500000 && f[b + F.HP] > 30 && !safe) {
+      const tstyle = f[this.nidx[5] * R_FIELDS + F.STYLE];
+      if (styleBeats(tstyle, style)) style = (tstyle + 2) % 3;
       if (this.tryAttack(e, style, false)) return;
-      this.botToward(e, this.ndx[5], this.ndy[5]);
+      if (style === 1 && nd2[5] < 300 * 300) this.botToward(e, -this.ndx[5], -this.ndy[5]);
+      else this.botToward(e, this.ndx[5], this.ndy[5]);
       return;
     }
     const goTo = (cls) => {
@@ -677,13 +891,32 @@ export class RealmEnv {
     };
     if (f[b + F.WATER] < 50) { goTo(3); return; }
     if (f[b + F.FOOD] < 50 && f[b + F.RAT] === 0) { goTo(0); return; }
+    if (hungry && animalIdx >= 0 && f[b + F.HP] * 2 > this.maxHp(e) && nd2[6] < 350 * 350 && nd2[6] < nd2[5]) {
+      if (this.tryAttack(e, style, false)) return;
+      this.botToward(e, this.ndx[6], this.ndy[6]);
+      return;
+    }
+    if (!desperate && !safe && f[b + F.TOOL] >= GREAT_TOOL && f[b + F.WATER] > 60 && f[b + F.FOOD] > 40) {
+      let gD2 = R_FAR, gx = 0, gy = 0, gIdx = -1;
+      for (let j = R_GREAT0; j < R_GREAT_END; j++) {
+        if (this.nodeTimer[j] !== 0) continue;
+        const dx = this.nodeX[j] - f[b + F.X], dy = this.nodeY[j] - f[b + F.Y];
+        let d2 = dx * dx + dy * dy;
+        if (d2 < BOT_GREAT_RANGE * BOT_GREAT_RANGE && this.gatherAt(j, e)) d2 >>= 2;
+        if (d2 < gD2) { gD2 = d2; gx = dx; gy = dy; gIdx = j; }
+      }
+      if (gIdx >= 0 && gD2 < BOT_GREAT_RANGE * BOT_GREAT_RANGE) {
+        if (gD2 <= REACH_NODE * REACH_NODE) { this.act[e] = ACT.INTERACT; this.tgtNode[e] = gIdx; return; }
+        this.botToward(e, gx, gy);
+        return;
+      }
+    }
     if (inTown) {
       if (this.canCraftTool(e)) { this.act[e] = ACT.CRAFT_TOOL; return; }
-      if (this.canCraftWeap(e)) { this.act[e] = ACT.CRAFT_WEAP; return; }
+      if (this.canCraftWeap(e) && f[b + F.WEAP] < f[b + F.TOOL]) { this.act[e] = ACT.CRAFT_WEAP; return; }
       if (f[b + F.WOOD] + f[b + F.ORE] > 0) { this.act[e] = ACT.INTERACT; this.tgtNode[e] = this.nearestInteractNode(e, allowGreat); return; }
       if (f[b + F.GOLD] >= 15 && f[b + F.RAT] < 2) { this.act[e] = ACT.BUY; return; }
     }
-    if (bossHold) return;
     if (f[b + F.WOOD] + f[b + F.ORE] >= 8 || (f[b + F.WOOD] >= 4 && f[b + F.ORE] >= 3)) {
       if (this.town.d2 > REACH_TOWN * REACH_TOWN) this.botToward(e, this.town.dx, this.town.dy);
       else { this.act[e] = ACT.INTERACT; this.tgtNode[e] = this.nearestInteractNode(e, allowGreat); }
@@ -717,6 +950,23 @@ export class RealmEnv {
     this.tgtNode[a] = -1;
   }
 
+  mobKind(e) {
+    return (e - R_MOB0) % 5;
+  }
+
+  packCount(e, target) {
+    const f = this.f;
+    const tx = f[target * R_FIELDS + F.X], ty = f[target * R_FIELDS + F.Y];
+    const kind = this.mobKind(e);
+    let n = 0;
+    for (let j = R_MOB0; j < R_BOSS0; j++) {
+      if (j === e || !this.alive(j) || this.mobKind(j) !== kind) continue;
+      const dx = f[j * R_FIELDS + F.X] - tx, dy = f[j * R_FIELDS + F.Y] - ty;
+      if (dx * dx + dy * dy < PACK_RADIUS * PACK_RADIUS) n++;
+    }
+    return n;
+  }
+
   mobDecide(e, tick) {
     const f = this.f;
     const b = e * R_FIELDS;
@@ -735,13 +985,24 @@ export class RealmEnv {
       else if (((tick >>> 4) + e) % 3 === 0) this.wander(e, tick);
       return;
     }
-    const aggro = isNight(tick) ? (this.homeNearTown(e) ? 900 + Math.trunc((900 * this.difficulty) / 100) : 1200) : DAY_AGGRO;
-    const style = f[b + F.STYLE];
+    const kind = this.mobKind(e);
+    const aggroUp = isNight(tick) ? (this.homeNearTown(e) ? 900 + Math.trunc((900 * this.difficulty) / 100) : 1200) : DAY_AGGRO;
+    let aggro = aggroUp;
+    if (kind === 1) aggro = STALKER_AGGRO;
+    else if (kind === 4) aggro = AMBUSH_AGGRO;
+    else if (best >= 0 && this.inCover(f[best * R_FIELDS + F.X], f[best * R_FIELDS + F.Y])) aggro >>= 1;
+    const style = kind === 3 ? 2 : f[b + F.STYLE];
     const range = MOB_STYLE_RANGE[style];
     const hx = f[b + F.HX] - ex, hy = f[b + F.HY] - ey;
-    if (best >= 0 && bestD2 < aggro * aggro && hx * hx + hy * hy < (isBoss(e) ? BOSS_LEASH : MOB_LEASH) * (isBoss(e) ? BOSS_LEASH : MOB_LEASH)) {
+    const leash = isBoss(e) ? BOSS_LEASH : MOB_LEASH;
+    let engaged = best >= 0 && bestD2 < aggro * aggro && hx * hx + hy * hy < leash * leash;
+    if (engaged && kind === 2) engaged = this.packCount(e, best) >= PACK_NEED;
+    if (engaged) {
       const dx = f[best * R_FIELDS + F.X] - ex, dy = f[best * R_FIELDS + F.Y] - ey;
-      if (bestD2 > (range * 3 / 4 | 0) * (range * 3 / 4 | 0)) this.toward(e, dx, dy);
+      if (kind === 3) {
+        if (bestD2 > CASTER_FAR * CASTER_FAR) this.toward(e, dx, dy);
+        else if (bestD2 < CASTER_NEAR * CASTER_NEAR) this.toward(e, -dx, -dy);
+      } else if (bestD2 > (range * 3 / 4 | 0) * (range * 3 / 4 | 0)) this.toward(e, dx, dy);
       this.tryAttack(e, style, false);
     } else {
       if (isBoss(e) && ((tick + e) & 63) === 0) {
@@ -756,7 +1017,12 @@ export class RealmEnv {
   moveEntity(e, tick) {
     const f = this.f;
     const b = e * R_FIELDS;
+    if (e < R_PLAYERS && this.atkCast[e] === 1 && this.atkStyle[e] === 2) this.blink(e, this.atkTgt[e]);
     const sprint = e < R_PLAYERS && f[b + F.SPRINT] === 1;
+    if (e < R_PLAYERS && this.act[e] === ACT.ATTACK && this.atkStyle[e] === 1 && this.tierOf(e, 1) >= 3) {
+      this.ctlX[e] = -this.ctlX[e];
+      this.ctlY[e] = -this.ctlY[e];
+    }
     let base = e < R_PLAYERS ? 26 : e < R_ANIMAL0 ? 20 : 24;
     if (e >= R_MOB0 && e < R_ANIMAL0 && isNight(tick) && this.homeNearTown(e)) base += Math.trunc((12 * this.difficulty) / 100);
     const speed = sprint ? (base * 8) >> 2 : base;
@@ -863,8 +1129,9 @@ export class RealmEnv {
     this.satOre[i] = ore;
   }
 
-  price(sat, i) {
-    return Math.max(MARKET_FLOOR, 100 - sat[i]);
+  price(sat, i, ore) {
+    const scarce = (i & 1) !== (ore ? 1 : 0);
+    return Math.max(MARKET_FLOOR, 100 - sat[i] + (scarce ? TOWN_BIAS : -TOWN_BIAS));
   }
 
   participant(p, v, tick) {
@@ -872,6 +1139,41 @@ export class RealmEnv {
     if (!this.alive(p)) return false;
     if (this.f[b + F.BOSS_ID] === v && tick - this.f[b + F.BOSS_TICK] <= BOSS_WINDOW) return true;
     return this.act[p] === ACT.ATTACK && this.atkTgt[p] === v;
+  }
+
+  tradeDeficit(e) {
+    const b = e * R_FIELDS;
+    return 200 - this.f[b + F.FOOD] - this.f[b + F.WATER];
+  }
+
+  tradePhase() {
+    const f = this.f;
+    for (let e = 0; e < R_PLAYERS; e++) { this.tp[e] = -1; this.tradeRole[e] = 0; this.tradeOk[e] = 0; }
+    for (let e = 0; e < R_PLAYERS; e++) {
+      if (!this.alive(e)) continue;
+      const p = this.tradePartner(e);
+      if (p < 0 || this.tradePartner(p) !== e) continue;
+      if (this.act[e] !== ACT.INTERACT && this.act[p] !== ACT.INTERACT) continue;
+      const de = this.tradeDeficit(e), dp = this.tradeDeficit(p);
+      const recvIsE = de > dp || (de === dp && e < p) ? 1 : 0;
+      const giver = recvIsE ? p : e, recv = recvIsE ? e : p;
+      this.tp[e] = p;
+      this.tradeRole[e] = recvIsE ? 1 : -1;
+      this.tradeOk[e] = f[giver * R_FIELDS + F.RAT] > 0 && f[recv * R_FIELDS + F.RAT] < RAT_CAP && f[recv * R_FIELDS + F.GOLD] >= TRADE_PRICE ? 1 : 0;
+    }
+    for (let e = 0; e < R_PLAYERS; e++) {
+      const p = this.tp[e];
+      if (p < 0 || this.tradeOk[e] === 0) continue;
+      const b = e * R_FIELDS;
+      if (this.tradeRole[e] === 1) {
+        f[b + F.GOLD] -= TRADE_PRICE;
+        f[b + F.RAT] = Math.min(RAT_CAP, f[b + F.RAT] + 1);
+      } else {
+        f[b + F.RAT] -= 1;
+        f[b + F.GOLD] += TRADE_PRICE;
+      }
+      this.add(e, CH.COOP, TRADE_REWARD);
+    }
   }
 
   interactPhase(e) {
@@ -883,8 +1185,8 @@ export class RealmEnv {
       if (node < 0) return;
       const type = nodeTypeOf(node);
       if (type === N_TOWN) {
-        const woodPrice = this.price(this.sat, node - NODE_FIRST_TOWN);
-        const orePrice = this.price(this.satOre, node - NODE_FIRST_TOWN);
+        const woodPrice = this.price(this.sat, node - NODE_FIRST_TOWN, 0);
+        const orePrice = this.price(this.satOre, node - NODE_FIRST_TOWN, 1);
         const banking = e < this.brain && f[b + F.TOOL] < BANK_TOOL;
         const sellWood = f[b + F.WOOD] - Math.min(f[b + F.WOOD], banking ? 2 + 2 * f[b + F.TOOL] : 0);
         const sellOre = f[b + F.ORE] - Math.min(f[b + F.ORE], banking ? 1 + f[b + F.TOOL] : 0);
@@ -958,14 +1260,39 @@ export class RealmEnv {
     let best = 0;
     let fromMobs = 0;
     for (let a = 0; a < R_ENT; a++) {
-      if (this.act[a] !== ACT.ATTACK || this.atkTgt[a] !== v || !this.alive(a)) continue;
-      if (a >= R_PLAYERS) fromMobs += this.atkDmg[a];
-      else this.incoming[v] += this.atkDmg[a];
+      if (this.act[a] !== ACT.ATTACK || !this.alive(a)) continue;
+      if (this.atkTgt[a] === v) {
+        if (a >= R_PLAYERS) fromMobs += this.atkDmg[a];
+        else this.incoming[v] += this.atkDmg[a];
+      } else if (
+        this.atkCast[a] &&
+        this.atkStyle[a] === 0 &&
+        a < R_PLAYERS !== v < R_PLAYERS &&
+        this.shockHits(a, v)
+      ) {
+        if (a >= R_PLAYERS) fromMobs += this.atkDmg[a];
+        else this.incoming[v] += this.atkDmg[a];
+      } else continue;
       if (this.atkDmg[a] > best) { best = this.atkDmg[a]; this.killer[v] = a; }
     }
+    if (v < R_PLAYERS) {
+      const vx = f[v * R_FIELDS + F.X], vy = f[v * R_FIELDS + F.Y];
+      for (let j = R_BOSS0; j < R_ANIMAL0; j++) {
+        if (!this.alive(j)) continue;
+        const ph = this.bossPhase(j);
+        if (ph < 2) continue;
+        const dx = f[j * R_FIELDS + F.X] - vx, dy = f[j * R_FIELDS + F.Y] - vy;
+        const ar = BOSS_AURA_RANGE[ph - 1];
+        if (dx * dx + dy * dy > ar * ar) continue;
+        const ad = BOSS_AURA_DAMAGE[ph - 1];
+        fromMobs += ad;
+        if (ad > best) { best = ad; this.killer[v] = j; }
+      }
+    }
     const guard = v < R_PLAYERS ? GUARD_PCT * Math.min(GUARD_CAP, this.allyCount(v)) : 0;
-    const armor = v < R_PLAYERS ? ARMOR_PCT * f[v * R_FIELDS + F.TOOL] : 0;
+    const armor = v < R_PLAYERS ? ARMOR_PCT * f[v * R_FIELDS + F.TOOL] + (this.tierOf(v, 0) >= 3 ? BULWARK_PCT : 0) : 0;
     this.incoming[v] += Math.trunc((Math.trunc((fromMobs * (100 - guard)) / 100) * (100 - armor)) / 100);
+    if (v < R_PLAYERS && this.tierOf(v, 2) >= 2) this.incoming[v] = Math.trunc((this.incoming[v] * (100 - WARD_PCT)) / 100);
     this.dies[v] = f[v * R_FIELDS + F.HP] - this.incoming[v] <= 0 ? 1 : 0;
     if (isBoss(v)) {
       let top = -1, topDealt = 0;
@@ -1048,6 +1375,7 @@ export class RealmEnv {
       const xp = Math.max(1, this.atkDmg[e] >> 1);
       f[b + F.STYLE] = style;
       this.gainXp(e, F.XP0 + style, xp, CH.COMBAT);
+      if (e < this.brain) this.stats[R_STAT.ATK_MELEE + style]++;
     }
     if (e < R_PLAYERS) {
       for (let v = R_BOSS0; v < R_ANIMAL0; v++) {
@@ -1152,6 +1480,7 @@ export class RealmEnv {
     this.brain = Math.min(this.learnerSlots, Math.floor(outputs.length / R_NOUT));
     this.selfplay = this.brain === R_PLAYERS;
     this.act.fill(0);
+    this.atkCast.fill(0);
     this.tgtNode.fill(-1);
     this.rew.fill(0);
     this.rewardCh.fill(0);
@@ -1171,6 +1500,7 @@ export class RealmEnv {
     for (let j = 0; j < R_NODES; j++) if (this.nodeTimer[j] > 0) this.nodeTimer[j]--;
     for (let e = 0; e < R_ENT; e++) this.channelPhase(e);
     for (let g = 0; g < R_GREATS; g++) this.greatPhase(g);
+    this.tradePhase();
     for (let e = 0; e < R_PLAYERS; e++) if (this.alive(e)) this.interactPhase(e);
     for (let v = 0; v < R_ENT; v++) this.damagePhase(v, tick);
     for (let e = 0; e < R_ENT; e++) this.sharePhase(e);
@@ -1196,6 +1526,7 @@ export class RealmEnv {
     words[R_CFG_OFF + 2] = this.cfg.hungerPct;
     words[R_CFG_OFF + 3] = this.cfg.pvp;
     words[R_SLOTS_OFF] = this.learnerSlots;
+    words[R_GATE_OFF] = this.gateShift;
     for (let i = 0; i < 4; i++) { words[R_SAT_OFF + i] = this.sat[i]; words[R_SATO_OFF + i] = this.satOre[i]; }
     for (let g = 0; g < R_GREATS; g++) words[R_GPROG_OFF + g] = this.gprog[g];
     for (let i = 0; i < R_PLAYERS * R_CHANNELS; i++) words[R_CH_OFF + i] = this.rewardCh[i] >>> 0;
@@ -1244,25 +1575,56 @@ export function realmValidate(words) {
   return problems;
 }
 
+export function realmWordLabel(i) {
+  const rel = i - R_ENT_OFF;
+  const names = Object.keys(F);
+  if (rel >= 0 && rel < R_ENT * R_FIELDS) {
+    const field = rel % R_FIELDS;
+    const name = names.find((k) => F[k] === field) || field;
+    return 'ent' + ((rel / R_FIELDS) | 0) + '.' + name;
+  }
+  if (i < R_NODES) return 'node' + i + '.xy';
+  if (i >= R_NODE_TIMER_OFF && i < R_NODE_TIMER_OFF + R_NODES) return 'node' + (i - R_NODE_TIMER_OFF) + '.timer';
+  if (i >= R_CH_OFF) return 'rewardCh' + ((i - R_CH_OFF) / 4 | 0) + '.c' + ((i - R_CH_OFF) % 4);
+  return 'word' + i;
+}
+
+export function realmWordRow(i, gpuWords, jsWords) {
+  const rel = i - R_ENT_OFF;
+  if (rel < 0 || rel >= R_ENT * R_FIELDS) return '';
+  const base = R_ENT_OFF + ((rel / R_FIELDS) | 0) * R_FIELDS;
+  const names = Object.keys(F);
+  const diffs = [];
+  for (let k = 0; k < R_FIELDS; k++) {
+    if (gpuWords[base + k] !== jsWords[base + k]) diffs.push((names.find((n) => F[n] === k) || k) + ' ' + (gpuWords[base + k] | 0) + '/' + (jsWords[base + k] | 0));
+  }
+  return 'ent row diffs [' + diffs.join(', ') + ']';
+}
+
 export function realmDensify(env, rng) {
   env.cfg.learnerSlots = R_PLAYERS;
+  env.cfg.mobPct = 20;
   for (let e = 0; e < R_ENT; e++) {
     const b = e * R_FIELDS;
-    const outside = e >= R_PLAYERS || (e & 1) === 1;
-    env.f[b + F.X] = (outside ? 2900 : 1800) + Math.floor(rng.next() * 900);
-    env.f[b + F.Y] = (outside ? 2900 : 1800) + Math.floor(rng.next() * 900);
-    if (!env.passableAt(env.f[b + F.X], env.f[b + F.Y])) { env.f[b + F.X] = outside ? 3040 + (e & 7) * 8 : 2048; env.f[b + F.Y] = outside ? 2304 : 2048; }
+    const cell = e & 7;
+    const cx = 1850 + (cell & 3) * 260;
+    const cy = 1850 + (cell >> 2) * 260;
+    const spread = e < R_PLAYERS ? 270 : 90;
+    env.f[b + F.X] = cx + spread + Math.floor(rng.next() * 90) - 45;
+    env.f[b + F.Y] = cy + Math.floor(rng.next() * 90) - 45;
+    if (!env.passableAt(env.f[b + F.X], env.f[b + F.Y])) { env.f[b + F.X] = cx; env.f[b + F.Y] = cy; }
     if (e < R_PLAYERS) {
-      env.f[b + F.XP0] = Math.floor(rng.next() * 400);
-      env.f[b + F.XP1] = Math.floor(rng.next() * 400);
-      env.f[b + F.XP2] = Math.floor(rng.next() * 400);
+      const branch = e % 3;
+      env.f[b + F.XP0] = branch === 0 ? 900 : 40 + Math.floor(rng.next() * 40);
+      env.f[b + F.XP1] = branch === 1 ? 900 : 40 + Math.floor(rng.next() * 40);
+      env.f[b + F.XP2] = branch === 2 ? 900 : 40 + Math.floor(rng.next() * 40);
       env.f[b + F.WOOD] = Math.floor(rng.next() * 6);
       env.f[b + F.ORE] = Math.floor(rng.next() * 6);
       env.f[b + F.GOLD] = Math.floor(rng.next() * 30);
       env.f[b + F.FOOD] = 20 + Math.floor(rng.next() * 80);
       env.f[b + F.WATER] = 20 + Math.floor(rng.next() * 80);
-      env.f[b + F.HP] = (e & 3) === 1 ? 1 + Math.floor(rng.next() * 6) : 40 + Math.floor(rng.next() * 60);
-      env.f[b + F.RARE] = Math.floor(rng.next() * 5);
+      env.f[b + F.HP] = (e & 3) === 1 ? 1 + Math.floor(rng.next() * 6) : 90;
+      env.f[b + F.RARE] = 6;
       env.f[b + F.TOOL] = (e & 1) ? Math.floor(rng.next() * 4) : 2 + Math.floor(rng.next() * 2);
       env.f[b + F.WEAP] = Math.floor(rng.next() * 4);
       if (rng.next() < 0.3) { env.f[b + F.BOSS_ID] = R_BOSS0 + Math.floor(rng.next() * 4); env.f[b + F.BOSS_TICK] = 0; }
@@ -1319,25 +1681,27 @@ export const REALM = {
   id: 'realm',
   name: 'Realm (MMO world)',
   tickHz: 30,
-  dims: { nIn: 105, nOut: 12, nNodes: 147 },
+  dims: { nIn: 103, nOut: 13, nNodes: 147 },
   agents: R_ENT,
   learners: R_LEARNERS,
   maxLearners: R_PLAYERS,
   rewardChannels: ['survival', 'progress', 'combat', 'cooperation'],
   maxAge: R_MAX_AGE,
   worldWords: R_WORDS,
-  workgroupBytes: 15112,
-  inputNames: [].concat(...['berry', 'tree', 'ore', 'spring', 'town', 'hostile', 'animal', 'weakerPlayer', 'strongerPlayer'].map((c) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'].map((d) => c + d))).concat(['hp', 'food', 'water', 'lvlMelee', 'lvlRange', 'lvlMage', 'needDx', 'wood', 'ore', 'gold', 'rations', 'toolTier', 'weaponTier', 'greatDx', 'night', 'inTown', 'townDx', 'townDy', 'allies', 'rare', 'needDy', 'needUrge', 'inSafe', 'recentlyHit', 'bossNear', 'bossResistsMelee', 'bossResistsRange', 'bossResistsMage', 'greatProgress', 'greatDy', 'inWilds', 'woodPrice', 'orePrice']),
-  actionNames: ['+x', '-x', '+y', '-y', 'sprint', 'interact', 'melee', 'range', 'mage', 'craftTool', 'craftWeapon', 'buyRation'],
-  statNames: ['mobKills', 'greatHarvests', 'bossKills', 'pvpKills', 'harvests', 'allyTicks', 'playerDeaths'],
-  defaultCfg: () => ({ regrowPct: 100, mobPct: 100, hungerPct: 100, pvp: 1, learnerSlots: 16 }),
-  randomCfg: (seed) => ({ regrowPct: 60 + (mix(seed, 0, 0, 8) % 81), mobPct: 70 + (mix(seed, 1, 0, 8) % 61), hungerPct: 75 + (mix(seed, 2, 0, 8) % 51), pvp: mix(seed, 3, 0, 8) % 4 === 0 ? 0 : 1, learnerSlots: mix(seed, 4, 0, 8) % 4 === 0 ? 16 : 32 }),
+  workgroupBytes: 15144,
+  inputNames: [].concat(...['berry', 'tree', 'ore', 'spring', 'town', 'hostile', 'weakerPlayer', 'strongerPlayer'].map((c) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'].map((d) => c + d))).concat(['hp', 'food', 'water', 'lvlMelee', 'lvlRange', 'lvlMage', 'needDx', 'wood', 'ore', 'gold', 'rations', 'toolTier', 'weaponTier', 'greatDx', 'night', 'inTown', 'townDx', 'townDy', 'allies', 'rare', 'needDy', 'needUrge', 'inSafe', 'recentlyHit', 'bossNear', 'bossResistsMelee', 'bossResistsRange', 'bossResistsMage', 'greatProgress', 'greatDy', 'inWilds', 'woodPrice', 'orePrice', 'coverNear', 'hostileType', 'bossPhase', 'perkTier', 'tradeNeed', 'tradeDx']),
+  actionNames: ['+x', '-x', '+y', '-y', 'sprint', 'interact', 'melee', 'range', 'mage', 'craftTool', 'craftWeapon', 'buyRation', 'cast'],
+  statNames: ['mobKills', 'greatHarvests', 'bossKills', 'pvpKills', 'harvests', 'allyTicks', 'playerDeaths', 'atkMelee', 'atkRange', 'atkMage'],
+  defaultCfg: (opts) => ({ regrowPct: 100, mobPct: 100, hungerPct: 100, pvp: 1, learnerSlots: 16, styleGate: (opts && opts.styleGate) | 0, styleGateEval: (opts && opts.styleGateEval) | 0 }),
+  randomCfg: (seed, opts) => ({ regrowPct: 60 + (mix(seed, 0, 0, 8) % 81), mobPct: 70 + (mix(seed, 1, 0, 8) % 61), hungerPct: 75 + (mix(seed, 2, 0, 8) % 51), pvp: mix(seed, 3, 0, 8) % 4 === 0 ? 0 : 1, learnerSlots: mix(seed, 4, 0, 8) % 4 === 0 ? 16 : 32, styleGate: (opts && opts.styleGate) | 0, styleGateEval: (opts && opts.styleGateEval) | 0 }),
   createEnv: (seed, cfg, isEval, stats) => new RealmEnv(seed, cfg, isEval, stats),
   teacher: (env, a, tick, out) => env.teacherOutputs(a, tick, out),
   packEnv: (env) => env.pack(),
   snapshotFromWords: realmSnapshotFromWords,
   validateWords: realmValidate,
   densify: realmDensify,
+  wordLabel: realmWordLabel,
+  wordRow: realmWordRow,
   render: realmRender,
   wgsl: REALM_WGSL
 };

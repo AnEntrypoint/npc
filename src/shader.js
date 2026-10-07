@@ -1,4 +1,5 @@
-import { evoConfig } from './core.js';
+import { evoConfig, NSTATS, STAT, STATS_OFF, WORLD_HDR_WORDS } from './core.js';
+const STAT_CONSTS = Object.keys(STAT).map((k) => `const STAT_${k}: u32 = ${STAT[k]}u;`).join('\n');
 export const SIM_BINDINGS = { edgePk: 0, edgeW: 1, brain: 2, world: 3, graveyard: 4, archive: 5, archiveOut: 6, statsOut: 7, scratch: 8, uniforms: 9 };
 export const ENTRY_BINDINGS = {
   init_world: ['edgePk', 'edgeW', 'brain', 'world', 'graveyard', 'uniforms'],
@@ -23,17 +24,17 @@ export function shaderLayout(game, cfg) {
   const brainOffAct = brainOffState + 8;
   const brainOffHist = brainOffAct + nNodes;
   const brainStride = brainOffHist + nOut;
-  const worldStride = 24 + game.worldWords;
+  const worldStride = WORLD_HDR_WORDS + game.worldWords;
   const islandBlock = 4 + 64 * genomeStride;
   const islandMaxWorlds = Math.floor(cfg.evalStart / cfg.islands) + (cfg.evalStart % cfg.islands);
   const sortSize = nextPow2(64 + islandMaxWorlds * 4 + cfg.migrateCount);
-  const statsPerIsland = 40;
+  const statsPerIsland = 2 * NSTATS + 8;
   return {
     nIn, nOut, nNodes, learners, maxEdges, genomeHeader, genomeStride, brainOffLastIn, brainOffState, brainOffAct, brainOffHist, brainStride,
     worldStride, islandBlock, islandMaxWorlds, sortSize, statsPerIsland,
     worlds: cfg.worlds, islands: cfg.islands, migrateCount: cfg.migrateCount,
     brainCount: cfg.worlds * learners,
-    workgroupBytes: (learners * (nNodes | 1) + learners * (nIn | 1) + 3 * game.agents + 16 + learners + 10) * 4 + game.workgroupBytes
+    workgroupBytes: (learners * (nNodes | 1) + learners * (nIn | 1) + 3 * game.agents + NSTATS + learners + 10) * 4 + game.workgroupBytes
   };
 }
 
@@ -69,8 +70,9 @@ const IB: u32 = ${L.islandBlock}u;
 const SORT_N: u32 = ${L.sortSize}u;
 const MIGRATE_N: u32 = ${L.migrateCount}u;
 const WSTRIDE: u32 = ${L.worldStride}u;
-const STATS_OFF: u32 = 8u;
-const GAME_OFF: u32 = 24u;
+const STATS_OFF: u32 = ${STATS_OFF}u;
+const NSTATS: u32 = ${NSTATS}u;
+const GAME_OFF: u32 = ${WORLD_HDR_WORDS}u;
 const BSTRIDE: u32 = ${L.brainStride}u;
 const OFF_LASTIN: u32 = ${L.brainOffLastIn}u;
 const OFF_STATE: u32 = ${L.brainOffState}u;
@@ -102,16 +104,7 @@ const NEG_INF: f32 = -1e30;
 const VALID_FIT: f32 = -1e29;
 const REWARD_SCALE: f32 = 1024.0;
 const RATE_EMA_ALPHA: f32 = 0.002;
-const STAT_REW_EVO: u32 = 0u;
-const STAT_REW_BASE: u32 = 1u;
-const STAT_TICKS_EVO: u32 = 2u;
-const STAT_TICKS_BASE: u32 = 3u;
-const STAT_OPS_EVO: u32 = 4u;
-const STAT_BIRTHS: u32 = 5u;
-const STAT_DEATHS: u32 = 6u;
-const STAT_LIFE_FIT: u32 = 7u;
-const STAT_EDGES: u32 = 8u;
-const STAT_GAME0: u32 = 9u;
+${STAT_CONSTS}
 const EVAL_RESET: u32 = 1u;
 
 struct Uniforms {
@@ -129,8 +122,8 @@ struct Uniforms {
   migrate: u32,
   migrateCount: u32,
   difficulty: u32,
-  pad1: u32,
-  pad2: u32,
+  styleGate: u32,
+  styleGateEval: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> edgePk: array<u32>;
@@ -153,7 +146,7 @@ var<workgroup> obsBuf: array<atomic<u32>, ${game.learners * (L.nIn | 1)}>;
 var<workgroup> actionBuf: array<u32, ${game.agents}>;
 var<workgroup> rewardBuf: array<i32, ${game.agents}>;
 var<workgroup> deadBuf: array<u32, ${game.agents}>;
-var<workgroup> statAcc: array<atomic<i32>, 16>;
+var<workgroup> statAcc: array<atomic<i32>, ${NSTATS}>;
 var<workgroup> deadCount: atomic<u32>;
 var<workgroup> ndShared: u32;
 var<workgroup> deadFit: array<f32, ${game.learners}>;
@@ -164,7 +157,7 @@ var<workgroup> w_eval: u32;
 var<workgroup> w_rateEma: f32;
 var<workgroup> sortKey: array<f32, ${L.sortSize}>;
 var<workgroup> sortIdx: array<u32, ${L.sortSize}>;
-var<workgroup> reduceRows: array<i32, 2048>;
+var<workgroup> reduceRows: array<i32, ${64 * 2 * NSTATS}>;
 
 fn pcg(v: u32) -> u32 {
   let s = v * 747796405u + 2891336453u;
@@ -193,6 +186,7 @@ fn rn(st: ptr<function, u32>) -> f32 {
 }
 
 fn world_difficulty() -> i32 { return select(i32(U.difficulty), 100, w_eval == 1u); }
+fn world_style_gate() -> u32 { return select(0u, U.styleGate, w_eval == 0u || U.styleGateEval == 1u); }
 fn action_of(a: u32) -> u32 { return actionBuf[a]; }
 fn out_of(a: u32, k: u32) -> f32 { return act[a * ASTR + NIN + k]; }
 fn set_obs(a: u32, i: u32, v: f32) { atomicStore(&obsBuf[a * OSTR + i], bitcast<u32>(v)); }
@@ -529,7 +523,7 @@ fn copy_genome_to_graveyard(b: u32, slotBase: u32, fit: f32) {
 }
 
 fn stat_flush(wi: u32) {
-  for (var i = 0u; i < 16u; i++) {
+  for (var i = 0u; i < NSTATS; i++) {
     let idx = wi * WSTRIDE + STATS_OFF + i;
     if (i == STAT_EDGES) {
       world[idx] = bitcast<u32>(atomicLoad(&statAcc[i]));
@@ -553,7 +547,7 @@ fn init_world(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg
     world[wi * WSTRIDE] = mix4(U.seedBase, wi, 0u, 9u);
     world[wi * WSTRIDE + 1u] = select(0u, 1u, wi >= U.evalStart);
     world[wi * WSTRIDE + 2u] = 0u;
-    for (var i = 0u; i < 16u; i++) { world[wi * WSTRIDE + STATS_OFF + i] = 0u; }
+    for (var i = 0u; i < NSTATS; i++) { world[wi * WSTRIDE + STATS_OFF + i] = 0u; }
     for (var s = 0u; s < 4u; s++) { graveyard[(wi * 4u + s) * GS] = fb(NEG_INF); }
   }
   workgroupBarrier();
@@ -574,7 +568,7 @@ fn init_world(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg
 fn sim_step(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg: vec3<u32>) {
   let wi = wg.x;
   load_world_header(wi);
-  if (t < 16u) { atomicStore(&statAcc[t], 0); }
+  if (t < NSTATS) { atomicStore(&statAcc[t], 0); }
   if (t == 0u) { atomicStore(&deadCount, 0u); }
   workgroupBarrier();
   g_load(wi, t);
@@ -803,12 +797,12 @@ fn select_archive(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id
   }
 }
 
-fn reduce_world(w: u32, group: u32, mine: ptr<function, array<i32, 32>>) {
+fn reduce_world(w: u32, group: u32, mine: ptr<function, array<i32, ${2 * NSTATS}>>) {
   let base = w * WSTRIDE + STATS_OFF;
-  for (var i = 0u; i < 16u; i++) { (*mine)[group + i] += bitcast<i32>(world[base + i]); }
+  for (var i = 0u; i < NSTATS; i++) { (*mine)[group + i] += bitcast<i32>(world[base + i]); }
   statsOut[${cfg.islands * L.statsPerIsland}u + w * 2u] = bitcast<i32>(world[base + STAT_REW_EVO]);
   statsOut[${cfg.islands * L.statsPerIsland}u + w * 2u + 1u] = bitcast<i32>(world[base + STAT_TICKS_EVO]);
-  for (var i = 0u; i < 16u; i++) { if (i != STAT_EDGES) { world[base + i] = 0u; } }
+  for (var i = 0u; i < NSTATS; i++) { if (i != STAT_EDGES) { world[base + i] = 0u; } }
 }
 
 @compute @workgroup_size(64)
@@ -817,24 +811,24 @@ fn reduce_stats(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) 
   let firstWorld = island * U.islandSize;
   var lastWorld = firstWorld + U.islandSize;
   if (island == U.nIslands - 1u) { lastWorld = U.evalStart; }
-  var mine: array<i32, 32>;
+  var mine: array<i32, ${2 * NSTATS}>;
   for (var w = firstWorld + t; w < lastWorld; w += 64u) {
     reduce_world(w, 0u, &mine);
   }
   for (var w = U.evalStart + island + t * U.nIslands; w < WORLDS; w += 64u * U.nIslands) {
-    reduce_world(w, 16u, &mine);
+    reduce_world(w, NSTATS, &mine);
   }
-  for (var i = 0u; i < 32u; i++) { reduceRows[t * 32u + i] = mine[i]; }
+  for (var i = 0u; i < ${2 * NSTATS}u; i++) { reduceRows[t * ${2 * NSTATS}u + i] = mine[i]; }
   workgroupBarrier();
-  if (t < 32u) {
+  if (t < ${2 * NSTATS}u) {
     var sum = 0;
-    for (var r = 0u; r < 64u; r++) { sum += reduceRows[r * 32u + t]; }
+    for (var r = 0u; r < 64u; r++) { sum += reduceRows[r * ${2 * NSTATS}u + t]; }
     statsOut[island * ${L.statsPerIsland}u + t] = sum;
   }
-  if (t == 32u) {
-    statsOut[island * ${L.statsPerIsland}u + 32u] = bitcast<i32>(archive[island * IB]);
-    statsOut[island * ${L.statsPerIsland}u + 33u] = bitcast<i32>(archive[island * IB + 1u]);
-    statsOut[island * ${L.statsPerIsland}u + 34u] = bitcast<i32>(archive[island * IB + 2u]);
+  if (t == ${2 * NSTATS}u) {
+    statsOut[island * ${L.statsPerIsland}u + ${2 * NSTATS}u] = bitcast<i32>(archive[island * IB]);
+    statsOut[island * ${L.statsPerIsland}u + ${2 * NSTATS + 1}u] = bitcast<i32>(archive[island * IB + 1u]);
+    statsOut[island * ${L.statsPerIsland}u + ${2 * NSTATS + 2}u] = bitcast<i32>(archive[island * IB + 2u]);
   }
 }
 
@@ -879,7 +873,7 @@ fn observe_test(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) 
 fn env_test(@builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg: vec3<u32>) {
   let wi = wg.x;
   load_world_header(wi);
-  if (t < 16u) { atomicStore(&statAcc[t], 0); }
+  if (t < NSTATS) { atomicStore(&statAcc[t], 0); }
   workgroupBarrier();
   g_load(wi, t);
   workgroupBarrier();

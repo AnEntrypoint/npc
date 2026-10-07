@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { GAMES } from '../src/games/index.js';
-import { Brain, Rng, mix, evoConfig, genomeFromJSON, STAT, REWARD_SCALE } from '../src/core.js';
+import { Brain, Rng, mix, evoConfig, genomeFromJSON, STAT, NSTATS, REWARD_SCALE } from '../src/core.js';
 
 function parseArgs(argv) {
   const opts = { game: 'blob', worlds: 32, periods: 2, seed: 777, teacher: false, files: [] };
@@ -26,7 +26,7 @@ function evaluate(game, genome, worldCount, periods, seed, useTeacher) {
   const perWorld = [];
   for (let w = 0; w < worldCount; w++) {
     const worldSeed = mix(seed, w, 0, 9);
-    const stats = new Int32Array(16);
+    const stats = new Int32Array(NSTATS);
     const env = game.createEnv(worldSeed, game.defaultCfg(), true, stats);
     env.difficulty = 100;
     const brains = [];
@@ -77,7 +77,7 @@ function evaluate(game, genome, worldCount, periods, seed, useTeacher) {
     }
     learnerReward += worldReward;
     learnerTicks += worldTicks;
-    for (let i = 0; i < 16; i++) total[i] += stats[i];
+    for (let i = 0; i < NSTATS; i++) total[i] += stats[i];
     perWorld.push(worldReward / REWARD_SCALE / worldTicks);
   }
   const mean = perWorld.reduce((s, v) => s + v, 0) / perWorld.length;

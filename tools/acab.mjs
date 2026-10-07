@@ -2,7 +2,7 @@
 // usage: node tools/acab.mjs [--game blob] [--champ runs/<name>-base | --random] [--modes frozen,heb,ac] [--ac sigma=0.05] [--ticks 50000] [--windows 5] [--seeds 11,12]
 import { GAMES } from '../src/games/index.js';
 import { RealtimeNpc, REWARD_SCALE } from '../runtime/npc.js';
-import { randomGenome, genomeToJSON, Rng, mix } from '../src/core.js';
+import { randomGenome, genomeToJSON, Rng, mix, NSTATS } from '../src/core.js';
 import fs from 'node:fs';
 
 function parseArgs(argv) {
@@ -35,7 +35,7 @@ function genomeFor(opts, game, seed) {
 }
 
 function run(opts, game, genome, mode, seed) {
-  const stats = new Int32Array(16);
+  const stats = new Int32Array(NSTATS);
   const env = game.createEnv(seed, game.defaultCfg(), false, stats);
   const learners = game.learners;
   const maxAge = game.maxAge;

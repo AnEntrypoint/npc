@@ -1,14 +1,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
 const RUNS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'runs');
 export const LOCK_FILE = path.join(RUNS_DIR, '.gpu.lock');
 export const STALE_MS = 60000;
+export const LIVE_STALE_MS = 600000;
 const TICKET_STALE_MS = 30000;
 const WAIT_DIR = path.join(RUNS_DIR, '.gpu.wait');
 export const HEARTBEAT_MS = 10000;
+
+const HEARTBEAT_SRC = `
+const timer = setInterval(async () => {
+  try {
+    const fs = (await import('node:fs')).default;
+    const { workerData } = await import('node:worker_threads');
+    const lock = JSON.parse(fs.readFileSync(workerData.file, 'utf8'));
+    if (lock.pid !== workerData.pid) return;
+    fs.writeFileSync(workerData.file, JSON.stringify(Object.assign({}, lock, { heartbeat: Date.now() })));
+  } catch {}
+}, ${HEARTBEAT_MS});
+if (timer.unref) timer.unref();
+`;
 
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const blockMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -31,7 +46,9 @@ export function readLock() {
 }
 
 export function isStale(lock, staleMs = STALE_MS) {
-  return !lock || !pidAlive(lock.pid) || Date.now() - lock.heartbeat > staleMs;
+  if (!lock) return true;
+  if (!pidAlive(lock.pid)) return true;
+  return Date.now() - lock.heartbeat > Math.max(staleMs, LIVE_STALE_MS);
 }
 
 export function lockStatus(staleMs = STALE_MS) {
@@ -71,7 +88,7 @@ function liveTickets() {
   try { names = fs.readdirSync(WAIT_DIR); } catch { return []; }
   const live = [];
   for (const name of names) {
-    const m = /^(d+)-(d+)$/.exec(name);
+    const m = /^(\d+)-(\d+)$/.exec(name);
     if (!m) continue;
     const file = path.join(WAIT_DIR, name);
     let age = Infinity;
@@ -80,6 +97,14 @@ function liveTickets() {
     else try { fs.unlinkSync(file); } catch {}
   }
   return live.sort((a, b) => a.order - b.order || (a.name < b.name ? -1 : 1));
+}
+
+function startHeartbeat(record) {
+  try {
+    const worker = new Worker(HEARTBEAT_SRC, { eval: true, workerData: { file: LOCK_FILE, pid: record.pid, intervalMs: HEARTBEAT_MS } });
+    if (worker.unref) worker.unref();
+    return worker;
+  } catch { return null; }
 }
 
 export async function acquireLock(owner, options = {}) {
@@ -106,6 +131,7 @@ export async function acquireLock(owner, options = {}) {
   } finally {
     try { fs.unlinkSync(ticketFile); } catch {}
   }
+  const worker = startHeartbeat(record);
   return {
     heartbeat(extra) {
       const lock = readLock();
@@ -115,7 +141,7 @@ export async function acquireLock(owner, options = {}) {
       return true;
     },
     stillOwned: () => ownsLock(),
-    release: () => releaseLock()
+    release: () => { if (worker) worker.terminate(); return releaseLock(); }
   };
 }
 

@@ -78,7 +78,7 @@ const POP_ROLE_COLUMNS = [
 const ALL_METRICS = LOG_METRICS.concat(SUITE_METRICS, POP_METRICS, POP_SUITE_METRICS);
 
 function parseArgs(argv) {
-  const opts = { since: 72, limit: 60, baseline: path.join(RUNS, 'baseline.json'), match: '', all: false, setBaseline: null, eval: false, evalSeeds: 2, evalWorlds: 2, json: false, write: true, atTick: 0, files: [] };
+  const opts = { since: 72, limit: 60, baseline: path.join(RUNS, 'baseline.json'), match: '', all: false, setBaseline: null, eval: false, evalSeeds: 2, evalWorlds: 2, json: false, write: true, atTick: 0, paired: '', files: [] };
   for (const arg of argv) {
     const m = /^--([a-zA-Z-]+)(?:=(.*))?$/.exec(arg);
     if (!m) { opts.files.push(arg); continue; }
@@ -162,6 +162,33 @@ function nearestToTick(entries, target) {
   return best === null ? null : best.entry;
 }
 
+// A log window lands every logSeconds, so two runs judged at the same nominal tick can
+// sit up to a window apart; on a steep part of the learning curve that offset is the
+// largest single term in a paired delta. Interpolate the bracketing windows instead.
+function interpolatedToTick(entries, target) {
+  const sorted = entries.slice().sort((a, b) => num(a.fields.tick) - num(b.fields.tick));
+  let lo = null;
+  let hi = null;
+  for (const entry of sorted) {
+    const t = num(entry.fields.tick);
+    if (t !== null && t <= target) lo = entry;
+    if (t !== null && t >= target) { hi = entry; break; }
+  }
+  if (!lo || !hi || lo === hi) return nearestToTick(sorted, target);
+  const t0 = num(lo.fields.tick);
+  const t1 = num(hi.fields.tick);
+  const w = t1 === t0 ? 0 : (target - t0) / (t1 - t0);
+  const near = w < 0.5 ? lo : hi;
+  const fields = {};
+  const keys = new Set([...Object.keys(lo.fields), ...Object.keys(hi.fields)]);
+  for (const key of keys) {
+    const a = num(lo.fields[key]);
+    const b = num(hi.fields[key]);
+    fields[key] = a !== null && b !== null ? a + (b - a) * w : near.fields[key];
+  }
+  return { label: lo.label, groups: near.groups, fields };
+}
+
 function parseLog(file, atTick) {
   const name = path.basename(file, '.log');
   const stat = fs.statSync(file);
@@ -186,7 +213,7 @@ function parseLog(file, atTick) {
   }
   const rows = [];
   for (const [label, entries] of byLabel) {
-    const matched = atTick === null ? null : nearestToTick(entries, atTick);
+    const matched = atTick === null ? null : interpolatedToTick(entries, atTick);
     const recent = matched ? [matched] : entries.slice(-SMOOTH_LINES);
     const mean = (pick) => { const values = recent.map(pick).filter((v) => v !== null && v !== undefined); return values.length ? values.reduce((s, v) => s + v, 0) / values.length : null; };
     const last = matched || entries[entries.length - 1];
@@ -335,7 +362,7 @@ function buildGroups(rows, options) {
     if (missingEval) notes.push(missingEval + ' without evalsuite');
     const evalErrors = champion.filter((c) => c.evalJson && c.evalJson.error);
     if (evalErrors.length) notes.push('evalsuite: ' + evalErrors[0].evalJson.error.slice(0, 60));
-    out.push({ key: group.key, game: group.game || (members.find((m) => m.game) || {}).game, seeds: members.map((m) => m.seed).filter((s) => s !== null).sort((a, b) => a - b), n: members.length, mtime: group.mtime, stats, popRoles, notes, matchedTick: options.atTick ? stat(members.map((m) => m.matchedTick)) : undefined });
+    out.push({ key: group.key, game: group.game || (members.find((m) => m.game) || {}).game, members, seeds: members.map((m) => m.seed).filter((s) => s !== null).sort((a, b) => a - b), n: members.length, mtime: group.mtime, stats, popRoles, notes, matchedTick: options.atTick ? stat(members.map((m) => m.matchedTick)) : undefined });
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
@@ -356,6 +383,28 @@ function compareToBaseline(group, baseline) {
   const ratio = group.stats.ratio;
   const ratioBefore = reference.ratio;
   return { flags, delta: ratio && ratioBefore && ratioBefore.mean ? (ratio.mean - ratioBefore.mean) / ratioBefore.mean : null };
+}
+
+function pairedDeltas(groups, pairedKey, metricsByKey) {
+  if (!pairedKey) return [];
+  const columns = ['evalReward', 'evalBase', 'ratio', 'evalLife', 'h2hRatio', 'selfPlayReward'];
+  const base = groups.find((g) => g.key === pairedKey);
+  if (!base) return ['## Paired deltas vs ' + pairedKey, '', 'baseline group not found'];
+  const baseBySeed = new Map(base.members.map((m) => [m.seed === null ? 'null' : String(m.seed), m]));
+  const rows = [];
+  for (const group of groups) {
+    if (group.key === pairedKey) continue;
+    const pairs = group.members.map((m) => ({ a: m, b: baseBySeed.get(m.seed === null ? 'null' : String(m.seed)) })).filter((p) => p.b);
+    if (!pairs.length) continue;
+    const cells = columns.map((key) => {
+      const metric = metricsByKey[key];
+      const deltas = pairs.map(({ a, b }) => a.values[key] - b.values[key]).filter((v) => Number.isFinite(v));
+      return formatStat(stat(deltas), metric);
+    });
+    rows.push([group.key, pairs.length + ' pairs'].concat(cells));
+  }
+  return ['## Paired deltas vs ' + pairedKey + ' (arm - baseline on the SAME seed; the sd is the noise on the decision, not on the run)', '',
+    rows.length ? table(['run', 'pairs'].concat(columns.map((k) => metricsByKey[k].label)), rows) : 'no run shares a seed with ' + pairedKey];
 }
 
 function table(header, rows) {
@@ -417,6 +466,7 @@ function main() {
   const behaviourGroups = compared.slice(0, options.limit).filter(({ group }) => BEHAVIOUR_COLUMNS.some((k) => group.stats[k]));
   const behaviourRows = behaviourGroups.map(({ group }) => [group.key].concat(BEHAVIOUR_COLUMNS.map((k) => formatStat(group.stats[k], metricsByKey[k]))));
   const regressions = compared.filter((c) => c.flags.length);
+  const pairedSection = pairedDeltas(groups, options.paired, metricsByKey);
   const popGroups = compared.slice(0, options.limit).filter(({ group }) => Object.keys(group.popRoles).length > 0);
   const popRoleNames = Array.from(new Set(popGroups.flatMap(({ group }) => Object.keys(group.popRoles)))).sort();
   const popColumns = POP_ROLE_COLUMNS.filter((c) => popGroups.some(({ group }) => Object.values(group.popRoles).some((r) => r[c.column])));
@@ -443,6 +493,7 @@ function main() {
     behaviourRows.length ? table(['run'].concat(BEHAVIOUR_COLUMNS.map((k) => metricsByKey[k].label)), behaviourRows) : 'no evalsuite results yet: run `node tools/evalsuite.mjs runs/<champion>` or `node tools/report.mjs --eval`',
     '',
     ...(popRows.length ? ['## Population (POP[..] log groups; per role: rate = train reward/tick x1e3, eval = pure-role benchmark x1e3, life, ratio vs bots, mix = rate inside the mixed team x1e3; MIX entry = mixed-team benchmark; JS/MI/cross ally/boss multi columns come from evalsuite bots)', '', table(popHeader, popRows), ''] : []),
+    ...(pairedSection.length ? ['', ...pairedSection] : []),
     '## Regressions vs baseline',
     '',
     baseline ? (regressions.length ? regressions.map((c) => '- ' + c.group.key + ': ' + c.flags.join('; ')).join('\n') : 'none (baseline ' + baseline.updated + ', ' + Object.keys(baseline.groups).length + ' groups)') : 'no baseline: `node tools/report.mjs --set-baseline`'

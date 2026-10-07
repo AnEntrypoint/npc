@@ -39,7 +39,8 @@ for (const name of order.flatMap(expand)) {
 
 const template = readFileSync(join(root, 'template.html'), 'utf8');
 const body = parts.join('\n');
-const hash = createHash('sha256').update(template).update('\n').update(body).digest('hex').slice(0, 16);
+const builder = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+const hash = createHash('sha256').update(template).update('\n').update(body).update('\n').update(builder).digest('hex').slice(0, 16);
 const stamp = '<meta name="build-hash" content="' + hash + '">';
 const html = template.replace(placeholder, () => body).replace(/<head([^>]*)>/i, (tag) => tag + stamp);
 

@@ -7,9 +7,32 @@ const RUNS = path.join(ROOT, 'runs');
 const WORKGROUP_LIMIT = 32768;
 
 const ANCHOR = {
-  realm: { hidden: 96, rolloutTicks: 31, bytes: 31476, perHidden: 40.9, perTick: 18.1 },
-  blob: { hidden: 96, rolloutTicks: 31, bytes: 17796, perHidden: 189.5, perTick: 64 },
+  realm: { hidden: 64, rolloutTicks: 31 },
+  blob: { hidden: 96, rolloutTicks: 31 },
 };
+
+const { rlShaderLayout } = await import('../src/rlshader.js');
+const { RL_DEFAULTS, RL_CURRICULUM_DEFAULTS, RL_POP_DEFAULTS, RL_GAME_DEFAULTS } = await import('../src/rl.js');
+
+async function loadGame(name) {
+  const m = await import(`../src/games/${name}.js`);
+  return Object.values(m).find((v) => v && v.dims && typeof v.agents === 'number') || null;
+}
+const GAMES = { realm: await loadGame('realm'), blob: await loadGame('blob') };
+
+export function predictLayout(game, hidden, rolloutTicks, blockGrad = 1) {
+  const g = GAMES[game];
+  if (!g) return null;
+  const cfg = Object.assign({}, RL_DEFAULTS, RL_CURRICULUM_DEFAULTS, RL_POP_DEFAULTS, RL_GAME_DEFAULTS[game] || {},
+    { worlds: 512, policies: 1, soa: 0 }, { blockGrad, hidden, rolloutTicks });
+  const S = rlShaderLayout(g, cfg);
+  return { bytes: Math.max(S.rolloutBytes, S.gradBytes), rolloutBytes: S.rolloutBytes, gradBytes: S.gradBytes, blockGrad: S.blockGrad };
+}
+
+export function predictBytesUpperBound(game, hidden, rolloutTicks) {
+  const p = predictLayout(game, hidden, rolloutTicks);
+  return p && p.bytes;
+}
 
 const BRACKET = [
   { group: 'size', tag: 'h64', params: { hidden: 64 } },
@@ -25,12 +48,6 @@ const BRACKET = [
   { group: 'opt', tag: 'ep3', params: { epochs: 3 } },
   { group: 'opt', tag: 'clip03', params: { clip: 0.3 } },
 ];
-
-export function predictBytesUpperBound(game, hidden, rolloutTicks) {
-  const a = ANCHOR[game];
-  if (!a) return null;
-  return Math.round(a.bytes + (hidden - a.hidden) * a.perHidden + (rolloutTicks - a.rolloutTicks) * a.perTick);
-}
 
 function parseFlags(argv) {
   const options = {};
@@ -87,10 +104,12 @@ function check(argv) {
   const game = options.game;
   const hidden = Number(options.hidden || ANCHOR[game]?.hidden || 96);
   const rolloutTicks = Number(options.rolloutTicks || ANCHOR[game]?.rolloutTicks || 31);
-  const bytes = predictBytesUpperBound(game, hidden, rolloutTicks);
-  if (bytes === null) { console.log('no measured anchor for "' + game + '": cannot predict (add one to ANCHOR in tools/autosize.mjs)'); return; }
-  const ok = bytes <= WORKGROUP_LIMIT;
-  console.log(game + ' hidden ' + hidden + ' rolloutTicks ' + rolloutTicks + ': ' + bytes + ' B of ' + WORKGROUP_LIMIT + ' -> ' + (ok ? 'compiles' : 'FAILS pipeline creation' + (options.blockgrad ? ' (blockGrad 0 moves the limit to the gradient kernel, which this does not predict)' : '; try --blockgrad=0')));
+  const p = predictLayout(game, hidden, rolloutTicks, options.blockgrad ? 0 : 1);
+  if (p === null) { console.log('no game module with dims for "' + game + '" (add it to GAMES in tools/autosize.mjs)'); return; }
+  const ok = p.bytes <= WORKGROUP_LIMIT;
+  console.log(game + ' hidden ' + hidden + ' rolloutTicks ' + rolloutTicks + ' blockGrad ' + (p.blockGrad ? 1 : 0)
+    + ': rollout ' + p.rolloutBytes + ' B, grad ' + p.gradBytes + ' B, max ' + p.bytes + ' B of ' + WORKGROUP_LIMIT
+    + ' -> ' + (ok ? 'compiles' : 'FAILS pipeline creation' + (p.blockGrad ? '; try --blockgrad=0' : '')));
 }
 
 const [verb, ...argv] = process.argv.slice(2);

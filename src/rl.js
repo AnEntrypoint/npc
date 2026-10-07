@@ -56,9 +56,14 @@ export const RL_DEFAULTS = {
   obsNormCap: 8000000,
   soa: 0,
   optimizer: 'adam',
-  obgdBudget: 0
+  obgdBudget: 0,
+  styleGate: 0,
+  styleGateEval: 0,
+  inputMask: 0,
+  maskEvery: 128,
+  maskFixed: ''
 };
-export const RL_GAME_DEFAULTS = { blob: { rolloutTicks: 16, gamma: 0.999, entropy: 0.001, entropyEnd: 0.001, obsNorm: 1, curriculum: 0, curriculumSelfPlay: 0 }, realm: { hidden: 64, randomize: 0 } };
+export const RL_GAME_DEFAULTS = { blob: { rolloutTicks: 16, gamma: 0.999, entropy: 0.001, entropyEnd: 0.001, obsNorm: 1, curriculum: 0, curriculumSelfPlay: 0 }, realm: { hidden: 64, randomize: 0, popWeights: '0.5,1,1,1' } };
 
 export function rlLayout(nIn, nOut, hidden, features) {
   const f = features === true ? { bias: true } : features || {};
@@ -486,6 +491,7 @@ export function rlThetaToGenome(theta, L, game, hp, meta) {
   for (let j = 0; j < nIn; j++) {
     for (let i = 0; i < hidden; i++) {
       const w = folded.W1[i][j];
+      if (w === 0) continue;
       wmax = Math.max(wmax, Math.abs(w));
       edges.push([j, hid0 + i, w]);
     }

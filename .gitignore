@@ -17,3 +17,5 @@ runs/.r*.cjs
 node_modules/
 .DS_Store
 *.tmp
+kaggle/
+.scratch/

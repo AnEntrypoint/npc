@@ -12,20 +12,32 @@ body{margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,sans-seri
 h1{font-size:17px;margin:0;font-weight:600}
 h1 span{color:var(--dim);font-weight:400}
 #wrap{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
-#view{width:min(88vw,720px);aspect-ratio:1;background:#000;border:1px solid var(--line);border-radius:6px;display:block}
-#side{display:flex;flex-direction:column;gap:10px;width:260px}
+#stage{position:relative;line-height:0}
+#view{width:min(90vw,760px);aspect-ratio:1;background:#000;border:1px solid var(--line);border-radius:6px;display:block}
+#toast{position:absolute;left:10px;bottom:10px;line-height:1.45;font:13px system-ui,sans-serif;pointer-events:none;text-shadow:0 1px 3px #000}
+#toast div{background:rgba(13,17,23,.82);border:1px solid var(--line);border-radius:4px;padding:2px 7px;margin-top:3px;color:var(--fg)}
+#toast div.hint{color:#e3b341;border-color:#4a3f1a}
+#toast div.bad{color:#f85149;border-color:#4a1f1f}
+#toast div.good{color:var(--me);border-color:#1d4429}
+#side{display:flex;flex-direction:column;gap:10px;width:272px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:9px 12px}
 .card h2{margin:0 0 6px;font-size:12px;color:var(--dim);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 #stats{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-variant-numeric:tabular-nums}
-#stats b{color:var(--dim);font-weight:500}
+#stats b,#chan b{color:var(--dim);font-weight:500}
 #chan{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;font-variant-numeric:tabular-nums}
-#chan b{color:var(--dim);font-weight:500}
 #chan i{color:var(--dim);font-style:normal;font-size:11px}
 #board{font-variant-numeric:tabular-nums;font-size:13px}
 #board .row{display:flex;justify-content:space-between;gap:8px}
 #board .row.me{color:var(--me);font-weight:600}
 #board .who{color:var(--dim)}
-#mini{width:236px;height:236px;background:#000;border:1px solid var(--line);border-radius:4px;display:block}
+#goal{font-size:13px}
+#goal b{color:var(--me);font-weight:600}
+#goal i{color:var(--dim);font-style:normal}
+#mini{width:272px;height:272px;background:#000;border:1px solid var(--line);border-radius:4px;display:block}
+#legend{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:12.5px;align-items:center}
+#legend s{width:11px;height:11px;border-radius:50%;display:inline-block;text-decoration:none;border:1px solid rgba(0,0,0,.6)}
+#legend s.sq{border-radius:2px}
+#legend i{color:var(--dim);font-style:normal}
 #keys{color:var(--dim);font-size:12.5px;line-height:1.55}
 #keys kbd{background:#21262d;border:1px solid var(--line);border-radius:3px;padding:0 4px;color:var(--fg);font:11px monospace}
 #status{color:var(--dim);min-height:18px}
@@ -37,17 +49,22 @@ a{color:#58a6ff}
 <h1>Realm <span>— you vs 31 champion brains</span></h1>
 
 <div id="wrap">
-  <canvas id="view" width="720" height="720"></canvas>
+  <div id="stage">
+    <canvas id="view" width="760" height="760"></canvas>
+    <div id="toast"></div>
+  </div>
   <div id="side">
+    <div class="card"><h2>next objective</h2><div id="goal">—</div></div>
     <div class="card"><h2>you</h2><div id="stats"></div></div>
     <div class="card"><h2>your score per 1k ticks</h2><div id="chan"></div></div>
     <div class="card"><h2>reward board</h2><div id="board"></div></div>
-    <canvas id="mini" width="236" height="236"></canvas>
+    <canvas id="mini" width="272" height="272"></canvas>
+    <div class="card"><h2>legend</h2><div id="legend"></div></div>
   </div>
 </div>
 
 <div id="status">loading champion…</div>
-<div class="card" style="max-width:min(88vw,996px)">
+<div class="card" style="max-width:min(90vw,1044px)">
   <h2>controls</h2>
   <div id="keys">
     <kbd>WASD</kbd>/<kbd>arrows</kbd> move &nbsp; <kbd>shift</kbd> sprint &nbsp; <kbd>space</kbd>/<kbd>E</kbd> use &nbsp;
@@ -56,7 +73,7 @@ a{color:#58a6ff}
     <kbd>P</kbd> pause &nbsp; <kbd>R</kbd> new world &nbsp; <kbd>[</kbd> <kbd>]</kbd> zoom &nbsp; <kbd>M</kbd> follow camera
   </div>
 </div>
-<div id="keys" style="max-width:min(88vw,996px)">
+<div id="keys" style="max-width:min(90vw,1044px)">
   The 31 other players are all the same published champion, playing the real game at 30 Hz — no simplified
   mechanics, no handicap. The board is cumulative reward per player, the exact quantity they were trained on
   (survival + progress + combat + cooperation). Beat them at their own objective.
@@ -73,11 +90,18 @@ const WORLD = 8192;
 const GRID = 32;
 const CELL = WORLD / GRID;
 const HUMAN = 0;
+const REACH_NODE = 320;
+const REACH_TOWN = 500;
 const TERRAIN = ['#3b7a3b', '#245a2c', '#6b6b6b', '#1f4f8f', '#c2b26b'];
-const NODE_COLOR = ['#e05a8a', '#8b5a2b', '#d0d0e8', '#4fc3f7', '#f0e130'];
-const NODE_NAME = ['berry', 'tree', 'ore', 'spring', 'town'];
+const NODE = [
+  { name: 'berry', shape: 'dot', r: 5, color: '#e05a8a', use: 'eat' },
+  { name: 'tree', shape: 'tree', r: 8, color: '#3f8f45', use: 'chop wood' },
+  { name: 'ore', shape: 'square', r: 6, color: '#d0d0e8', use: 'mine ore' },
+  { name: 'spring', shape: 'ring', r: 6, color: '#4fc3f7', use: 'drink' },
+  { name: 'town', shape: 'house', r: 11, color: '#f0e130', use: 'sell / craft / buy' }
+];
 const KIND_COLOR = ['#58a6ff', '#ffa657', '#f85149', '#d2a8ff', '#ff00ff'];
-const KIND_NAME = ['learner', 'bot', 'mob', 'animal', 'boss'];
+const KIND_NAME = ['champion', 'bot', 'mob', 'animal', 'boss'];
 
 const q = new URLSearchParams(location.search);
 const intParam = (name, fallback) => { const v = Number(q.get(name)); return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback; };
@@ -91,7 +115,7 @@ const mctx = mini.getContext('2d');
 const el = (id) => document.getElementById(id);
 
 const held = new Set();
-let zoom = 0.45;
+let zoom = 0.6;
 let follow = true;
 let paused = false;
 let tick = 0;
@@ -112,6 +136,7 @@ const humanOut = new Float32Array(REALM.dims.nOut);
 const CHANNELS = REALM.rewardChannels || [];
 const CHAN_HINT = { survival: 'stay alive', progress: 'harvest, craft, sell', combat: 'fight', cooperation: 'great nodes, boss' };
 let chan = new Float64Array(CHANNELS.length);
+let prevField = null;
 
 const MOVE_KEYS = {
   arrowup: [3], w: [3], arrowdown: [2], s: [2], arrowleft: [1], a: [1], arrowright: [0], d: [0]
@@ -138,11 +163,120 @@ function makeEnv(seed) {
   chan = new Float64Array(CHANNELS.length);
   deaths = new Int32Array(slots);
   tick = 0;
+  prevField = null;
   snap = env.snapshot();
+}
+
+// ---- feedback: the player has to be able to see that an action landed ----
+let toastKey = '';
+let toastN = 0;
+let toastAt = 0;
+function toast(text, kind = '') {
+  const now = performance.now();
+  if (text === toastKey && now - toastAt < 1500) { toastN++; } else { toastKey = text; toastN = 1; }
+  toastAt = now;
+  const n = toastN > 1 ? ` ×${toastN}` : '';
+  const box = el('toast');
+  box.innerHTML = `<div class="${kind}">${text}${n}</div>` + box.innerHTML.split('</div>').slice(1, 4).map((s) => s + '</div>').join('');
+  box.dataset.at = String(now);
+}
+setInterval(() => {
+  const box = el('toast');
+  if (box.dataset.at && performance.now() - Number(box.dataset.at) > 2600) box.innerHTML = '';
+}, 700);
+
+function field(slot, key) { return env.f[slot * FIELDS + F[key]] | 0; }
+
+function reportDeltas() {
+  const now = new Int32Array(FIELDS);
+  for (let i = 0; i < FIELDS; i++) now[i] = env.f[HUMAN * FIELDS + i] | 0;
+  if (prevField) {
+    const d = (key) => now[F[key]] - prevField[F[key]];
+    if (d('TOOL') > 0) toast(`crafted tool → tier ${now[F.TOOL]}`, 'good');
+    if (d('WEAP') > 0) toast(`crafted weapon → tier ${now[F.WEAP]}`, 'good');
+    if (d('RAT') > 0) toast(d('GOLD') < 0 ? `bought a ration (−${-d('GOLD')} gold)` : 'received a ration', 'good');
+    if (d('WOOD') > 0) toast(`chopped wood (${now[F.WOOD]})`, 'good');
+    if (d('ORE') > 0) toast(`mined ore (${now[F.ORE]})`, 'good');
+    if (d('WATER') > 0) toast('drank from the spring', 'good');
+    if (d('FOOD') > 0) toast('ate berries', 'good');
+    if (d('GOLD') > 0 && d('WOOD') + d('ORE') < 0) toast(`sold resources → +${d('GOLD')} gold`, 'good');
+    const hp = d('HP');
+    if (hp < 0) toast(`hit — ${-hp} hp (${now[F.HP]} left)`, 'bad');
+    else if (hp > 0 && prevField[F.HP] < 100) toast(`recovered +${hp} hp`, 'good');
+    if (prevField[F.HP] > 0 && now[F.HP] === 0) toast('you died — respawning', 'bad');
+  }
+  prevField = now;
+}
+
+function nearestNode(types, onlyTown) {
+  const hx = field(HUMAN, 'X'), hy = field(HUMAN, 'Y');
+  let best = null, bd = Infinity;
+  for (const n of snap.nodes) {
+    if (onlyTown ? n.type !== 4 : !types.includes(n.type)) continue;
+    const dx = n.x - hx, dy = n.y - hy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < bd) { bd = d; best = { node: n, dx, dy, d }; }
+  }
+  return best;
+}
+
+function objective() {
+  if (!env || !snap) return null;
+  const tool = field(HUMAN, 'TOOL'), weap = field(HUMAN, 'WEAP');
+  const wood = field(HUMAN, 'WOOD'), ore = field(HUMAN, 'ORE');
+  const gold = field(HUMAN, 'GOLD'), rat = field(HUMAN, 'RAT');
+  const food = field(HUMAN, 'FOOD'), water = field(HUMAN, 'WATER');
+  const canTool = tool < 3 && wood >= 2 + 2 * tool && ore >= 1 + tool;
+  const canWeap = weap < 3 && ore >= 2 + 2 * weap && wood >= 1 + weap;
+  let type = 1, why = 'chop wood — you need 2 wood + 1 ore for a tool', act = 'space';
+  if (water < 45) { type = 3; why = 'you are thirsty — drink'; }
+  else if (food < 45) { type = 0; why = 'you are hungry — eat'; }
+  else if (canTool) { type = 4; why = `craft a tool (tier ${tool + 1})`; act = 'T'; }
+  else if (canWeap) { type = 4; why = 'craft a weapon'; act = 'Y'; }
+  else if (rat === 0 && gold >= 10) { type = 4; why = 'buy a ration'; act = 'B'; }
+  else if (wood + ore >= 4) { type = 4; why = 'sell your wood and ore'; }
+  const found = nearestNode([type], type === 4);
+  if (!found) return null;
+  const reach = type === 4 ? REACH_TOWN : REACH_NODE;
+  return { ...found, type, why, act, inReach: found.d <= reach };
+}
+
+const COMPASS = ['W', 'NW', 'N', 'NE', 'E', 'SE', 'S', 'SW'];
+function compass(dx, dy) {
+  const a = (Math.atan2(-dy, dx) * 4 / Math.PI + 8) % 8;
+  return COMPASS[Math.round(a) % 8];
+}
+
+function hintFor(pressed) {
+  if (!env || !snap) return;
+  const atTown = nearestNode([], true);
+  const townNear = atTown && atTown.d <= REACH_TOWN;
+  if (pressed.craft || pressed.weap || pressed.buy) {
+    if (!townNear) { toast('you must stand in a town to craft or buy', 'hint'); return; }
+    const tool = field(HUMAN, 'TOOL'), weap = field(HUMAN, 'WEAP');
+    const wood = field(HUMAN, 'WOOD'), ore = field(HUMAN, 'ORE'), gold = field(HUMAN, 'GOLD');
+    if (pressed.craft && !(tool < 3 && wood >= 2 + 2 * tool && ore >= 1 + tool)) {
+      toast(tool >= 3 ? 'tool is already max tier' : `need ${2 + 2 * tool} wood + ${1 + tool} ore (have ${wood}/${ore})`, 'hint');
+    } else if (pressed.weap && !(weap < 3 && ore >= 2 + 2 * weap && wood >= 1 + weap)) {
+      toast(weap >= 3 ? 'weapon is already max tier' : `need ${2 + 2 * weap} ore + ${1 + weap} wood (have ${ore}/${wood})`, 'hint');
+    } else if (pressed.buy && !(gold >= 10 && field(HUMAN, 'RAT') < 4)) {
+      toast(gold < 10 ? `a ration costs 10 gold (have ${gold})` : 'you are carrying 4 rations already', 'hint');
+    }
+    return;
+  }
+  if (pressed.use) {
+    const any = nearestNode([0, 1, 2, 3, 4], false);
+    const near = any && any.d <= (any.node.type === 4 ? REACH_TOWN : REACH_NODE);
+    if (!near) toast(any ? `${NODE[any.node.type].name} is ${Math.round(any.d)} away — walk onto it (reach ${any.node.type === 4 ? REACH_TOWN : REACH_NODE})` : 'nothing in reach', 'hint');
+  }
 }
 
 function stepOnce() {
   buildHumanOutputs();
+  const pressed = {
+    use: humanOut[5] > 0.5, craft: humanOut[9] > 0.5,
+    weap: humanOut[10] > 0.5, buy: humanOut[11] > 0.5
+  };
   for (let a = 0; a < slots; a++) {
     if (a === HUMAN) { outputs.set(humanOut, a * REALM.dims.nOut); continue; }
     env.observe(a, obs, tick);
@@ -150,6 +284,8 @@ function stepOnce() {
     outputs.set(npcs[a].outputs, a * REALM.dims.nOut);
   }
   env.step(actions, outputs, tick);
+  reportDeltas();
+  if (pressed.use || pressed.craft || pressed.weap || pressed.buy) hintFor(pressed);
   for (let c = 0; c < CHANNELS.length; c++) chan[c] += env.rewardCh[HUMAN * CHANNELS.length + c] / REWARD_SCALE;
   for (let a = 0; a < slots; a++) {
     scores[a] += env.reward[a] / REWARD_SCALE;
@@ -167,18 +303,72 @@ function stepOnce() {
   tick++;
 }
 
-function field(slot, key) { return env.f[slot * FIELDS + F[key]] | 0; }
+// ---- drawing: sprites keep a legible screen size at any zoom ----
+function fit(c, g, cssW, cssH) {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+  if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, cssH);
+  return { w: cssW, h: cssH };
+}
+
+function disc(g, x, y, r, fill, ring) {
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+  g.fillStyle = fill;
+  g.fill();
+  if (ring) { g.lineWidth = 2; g.strokeStyle = ring; g.stroke(); g.lineWidth = 1; }
+  else { g.lineWidth = 1.5; g.strokeStyle = 'rgba(0,0,0,.55)'; g.stroke(); }
+}
+
+function drawNode(g, n, x, y, r) {
+  const st = NODE[n.type] || NODE[1];
+  const s = r / st.r;
+  g.save();
+  g.translate(x, y);
+  g.scale(s, s);
+  g.lineWidth = 1.5;
+  g.strokeStyle = 'rgba(0,0,0,.6)';
+  g.fillStyle = st.color;
+  if (st.shape === 'dot') {
+    g.beginPath(); g.arc(0, 0, st.r, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(-st.r * 0.35, -st.r * 0.35, st.r * 0.28, 0, Math.PI * 2);
+    g.fillStyle = 'rgba(255,255,255,.5)'; g.fill();
+  } else if (st.shape === 'tree') {
+    g.beginPath(); g.moveTo(0, st.r * 0.9); g.lineTo(0, st.r * 0.1);
+    g.lineWidth = 2.2; g.strokeStyle = '#6b4423'; g.stroke();
+    g.lineWidth = 1.5; g.strokeStyle = 'rgba(0,0,0,.6)';
+    g.beginPath(); g.moveTo(0, -st.r); g.lineTo(st.r * 0.85, st.r * 0.35);
+    g.lineTo(-st.r * 0.85, st.r * 0.35); g.closePath(); g.fill(); g.stroke();
+  } else if (st.shape === 'square') {
+    g.beginPath(); g.moveTo(0, -st.r); g.lineTo(st.r, 0); g.lineTo(0, st.r); g.lineTo(-st.r, 0);
+    g.closePath(); g.fill(); g.stroke();
+  } else if (st.shape === 'ring') {
+    g.beginPath(); g.arc(0, 0, st.r * 0.75, 0, Math.PI * 2);
+    g.fillStyle = '#1f4f8f'; g.fill(); g.stroke();
+    g.beginPath(); g.arc(0, 0, st.r * 0.4, 0, Math.PI * 2);
+    g.strokeStyle = st.color; g.lineWidth = 2; g.stroke();
+  } else {
+    g.fillStyle = '#8a7420';
+    g.fillRect(-st.r * 0.8, -st.r * 0.2, st.r * 1.6, st.r);
+    g.fillStyle = st.color;
+    g.beginPath(); g.moveTo(-st.r, -st.r * 0.2); g.lineTo(0, -st.r); g.lineTo(st.r, -st.r * 0.2); g.closePath();
+    g.fill(); g.stroke();
+  }
+  g.restore();
+}
 
 function drawView() {
-  const w = view.width;
-  const h = view.height;
-  const me = snap.agents.find((a) => a.x === field(HUMAN, 'X') && a.y === field(HUMAN, 'Y'));
+  const { w, h } = fit(view, vctx, view.clientWidth, view.clientHeight);
   const hx = field(HUMAN, 'X');
   const hy = field(HUMAN, 'Y');
   if (follow) { drawView.cx = hx; drawView.cy = hy; }
   const cx = drawView.cx === undefined ? hx : drawView.cx;
   const cy = drawView.cy === undefined ? hy : drawView.cy;
   const half = w / (2 * zoom);
+  const sx = (x) => (x - cx) * zoom + w / 2;
+  const sy = (y) => (y - cy) * zoom + h / 2;
 
   vctx.fillStyle = '#000';
   vctx.fillRect(0, 0, w, h);
@@ -187,50 +377,115 @@ function drawView() {
   const r0 = Math.max(0, Math.floor((cy - half) / CELL));
   const r1 = Math.min(GRID - 1, Math.floor((cy + half) / CELL));
   for (let ry = r0; ry <= r1; ry++) for (let rx = c0; rx <= c1; rx++) {
-    vctx.fillStyle = TERRAIN[snap.cells[ry * GRID + rx]] || TERRAIN[0];
+    const t = snap.cells[ry * GRID + rx];
+    vctx.fillStyle = TERRAIN[t] || TERRAIN[0];
     vctx.fillRect((rx * CELL - cx) * zoom + w / 2, (ry * CELL - cy) * zoom + h / 2, CELL * zoom + 1, CELL * zoom + 1);
+    if (t === 2) {
+      vctx.fillStyle = 'rgba(0,0,0,.16)';
+      vctx.fillRect((rx * CELL - cx) * zoom + w / 2, (ry * CELL - cy) * zoom + h / 2, CELL * zoom + 1, CELL * zoom + 1);
+    }
   }
-  const sx = (x) => (x - cx) * zoom + w / 2;
-  const sy = (y) => (y - cy) * zoom + h / 2;
+  vctx.strokeStyle = 'rgba(0,0,0,.18)';
+  vctx.beginPath();
+  for (let rx = c0; rx <= c1 + 1; rx++) { const x = (rx * CELL - cx) * zoom + w / 2; vctx.moveTo(x, 0); vctx.lineTo(x, h); }
+  for (let ry = r0; ry <= r1 + 1; ry++) { const y = (ry * CELL - cy) * zoom + h / 2; vctx.moveTo(0, y); vctx.lineTo(w, y); }
+  vctx.stroke();
+
+  const goal = objective();
   for (const n of snap.nodes) {
-    if (n.x < cx - half - 8 || n.x > cx + half + 8 || n.y < cy - half - 8 || n.y > cy + half + 8) continue;
-    vctx.fillStyle = NODE_COLOR[n.type] || '#888';
-    const r = (n.great ? 5 : n.type === 4 ? 6 : 2.5) * Math.max(0.6, Math.min(2.2, zoom * 2.4));
-    vctx.beginPath();
-    vctx.arc(sx(n.x), sy(n.y), r, 0, Math.PI * 2);
-    vctx.fill();
+    if (n.x < cx - half - 60 || n.x > cx + half + 60 || n.y < cy - half - 60 || n.y > cy + half + 60) continue;
+    const st = NODE[n.type] || NODE[1];
+    let r = st.r * (n.great ? 1.5 : 1);
+    if (n.type === 4) r = st.r * 1.1;
+    drawNode(vctx, n, sx(n.x), sy(n.y), r);
+    if (n.great) disc(vctx, sx(n.x), sy(n.y), r + 4, 'rgba(0,0,0,0)', '#ffffff');
+    if (goal && goal.node === n) disc(vctx, sx(n.x), sy(n.y), r + 9, 'rgba(0,0,0,0)', '#3ddc84');
+    if (n.type === 4 || n.great || zoom > 0.5) {
+      vctx.font = '600 11px system-ui,sans-serif';
+      vctx.textAlign = 'center';
+      vctx.lineWidth = 3;
+      vctx.strokeStyle = 'rgba(0,0,0,.75)';
+      vctx.strokeText(n.great ? 'great ' + st.name : st.name, sx(n.x), sy(n.y) + r + 13);
+      vctx.fillStyle = '#e6edf3';
+      vctx.fillText(n.great ? 'great ' + st.name : st.name, sx(n.x), sy(n.y) + r + 13);
+    }
   }
   for (const a of snap.agents) {
-    if (a.x < cx - half - 8 || a.x > cx + half + 8 || a.y < cy - half - 8 || a.y > cy + half + 8) continue;
-    const boss = a.kind === 4;
-    vctx.beginPath();
-    vctx.arc(sx(a.x), sy(a.y), (boss ? 9 : 3 + a.level * 0.4) * Math.max(0.7, Math.min(2, zoom * 2)), 0, Math.PI * 2);
-    vctx.fillStyle = KIND_COLOR[a.kind] || '#888';
-    vctx.fill();
+    if (a.x < cx - half - 60 || a.x > cx + half + 60 || a.y < cy - half - 60 || a.y > cy + half + 60) continue;
+    const x = sx(a.x), y = sy(a.y);
+    if (a.kind === 2) {
+      const r = 7;
+      vctx.beginPath();
+      vctx.moveTo(x, y - r); vctx.lineTo(x + r, y + r * 0.8); vctx.lineTo(x - r, y + r * 0.8);
+      vctx.closePath();
+      vctx.fillStyle = KIND_COLOR[2]; vctx.fill();
+      vctx.lineWidth = 1.5; vctx.strokeStyle = 'rgba(0,0,0,.6)'; vctx.stroke();
+    } else if (a.kind === 3) {
+      const r = 4.5;
+      vctx.beginPath();
+      vctx.moveTo(x, y - r); vctx.lineTo(x + r, y); vctx.lineTo(x, y + r); vctx.lineTo(x - r, y);
+      vctx.closePath();
+      vctx.fillStyle = KIND_COLOR[3]; vctx.fill();
+      vctx.lineWidth = 1.5; vctx.strokeStyle = 'rgba(0,0,0,.6)'; vctx.stroke();
+    } else if (a.kind === 4) {
+      disc(vctx, x, y, 14, KIND_COLOR[4], '#ffffff');
+      vctx.font = '600 11px system-ui,sans-serif';
+      vctx.textAlign = 'center';
+      vctx.lineWidth = 3; vctx.strokeStyle = 'rgba(0,0,0,.8)';
+      vctx.strokeText('BOSS', x, y - 19);
+      vctx.fillStyle = '#fff';
+      vctx.fillText('BOSS', x, y - 19);
+    } else {
+      disc(vctx, x, y, a.kind === 0 ? 5 + Math.min(9, a.level) * 0.55 : 5, KIND_COLOR[a.kind] || '#888');
+    }
   }
-  vctx.beginPath();
-  vctx.arc(sx(hx), sy(hy), 7, 0, Math.PI * 2);
-  vctx.strokeStyle = '#3ddc84';
-  vctx.lineWidth = 2;
-  vctx.stroke();
-  vctx.lineWidth = 1;
-  if (me === undefined) {
-    vctx.fillStyle = '#3ddc84';
-    vctx.font = '14px system-ui';
-    vctx.fillText('you are dead — respawning', 12, 24);
+  disc(vctx, sx(hx), sy(hy), 9, 'rgba(61,220,132,.18)', '#3ddc84');
+  disc(vctx, sx(hx), sy(hy), 3, '#3ddc84');
+
+  if (goal) {
+    const gx = sx(goal.node.x), gy = sy(goal.node.y);
+    if (goal.inReach) {
+      vctx.font = '600 12px system-ui,sans-serif';
+      vctx.textAlign = 'center';
+      vctx.lineWidth = 3; vctx.strokeStyle = 'rgba(0,0,0,.8)';
+      const label = 'press ' + goal.act;
+      vctx.strokeText(label, gx, gy - 20);
+      vctx.fillStyle = '#3ddc84';
+      vctx.fillText(label, gx, gy - 20);
+    } else if (gx < 20 || gx > w - 20 || gy < 20 || gy > h - 20) {
+      const ang = Math.atan2(gy - h / 2, gx - w / 2);
+      const rad = Math.min(w, h) / 2 - 26;
+      const ax = w / 2 + Math.cos(ang) * rad, ay = h / 2 + Math.sin(ang) * rad;
+      vctx.save();
+      vctx.translate(ax, ay); vctx.rotate(ang);
+      vctx.beginPath(); vctx.moveTo(12, 0); vctx.lineTo(-8, 8); vctx.lineTo(-8, -8); vctx.closePath();
+      vctx.fillStyle = '#3ddc84'; vctx.fill();
+      vctx.restore();
+    }
   }
+  vctx.font = '11px system-ui,sans-serif';
+  vctx.textAlign = 'left';
+  vctx.fillStyle = 'rgba(0,0,0,.6)';
+  vctx.fillRect(6, h - 22, 92, 16);
+  vctx.fillStyle = '#9fb0c4';
+  vctx.fillText(`${Math.round(hx)},${Math.round(hy)}`, 12, h - 10);
 }
 
 function drawMini() {
   if (!snap) return;
-  realmRender(mctx, snap, mini.width, mini.height);
-  const s = mini.width / WORLD;
-  const half = view.width / (2 * zoom);
+  const { w, h } = fit(mini, mctx, mini.clientWidth, mini.clientHeight);
+  realmRender(mctx, snap, w, h);
+  const s = w / WORLD;
+  const half = view.clientWidth / (2 * zoom);
   const cx = follow ? field(HUMAN, 'X') : drawView.cx;
   const cy = follow ? field(HUMAN, 'Y') : drawView.cy;
   mctx.strokeStyle = '#3ddc84';
   mctx.lineWidth = 1;
   mctx.strokeRect((cx - half) * s, (cy - half) * s, 2 * half * s, 2 * half * s);
+  mctx.fillStyle = '#3ddc84';
+  mctx.beginPath();
+  mctx.arc(cx * s, cy * s, 2.5, 0, Math.PI * 2);
+  mctx.fill();
 }
 
 let boardAt = 0;
@@ -250,6 +505,16 @@ function drawPanels(nowMs) {
     const share = earned > 0 ? Math.round((100 * Math.max(0, chan[c])) / earned) : 0;
     return `<b>${name}</b><span>${per1k(chan[c]).toFixed(2)}</span><i>${share}%</i>`;
   }).join('') + `<i style="grid-column:1/-1">${CHANNELS.map((n) => CHAN_HINT[n]).filter(Boolean).join(' · ')}</i>`;
+
+  const goal = objective();
+  if (goal) {
+    const st = NODE[goal.node.type];
+    el('goal').innerHTML = `<b>${goal.node.great ? 'great ' : ''}${st.name}</b> — ${goal.why}<br>` +
+      `<i>${Math.round(goal.d)} units ${compass(goal.dx, goal.dy)}` +
+      `${goal.inReach ? ` · <b style="color:#3ddc84">go ${NODE[goal.type].name === 'town' ? 'to the town' : 'there'} and press ${goal.act}</b>` : ''}</i>`;
+  } else {
+    el('goal').innerHTML = '<i>nothing to do — explore</i>';
+  }
 
   if (nowMs - boardAt > 250) {
     boardAt = nowMs;
@@ -271,6 +536,12 @@ function rowHtml(i, rank) {
   const who = i === HUMAN ? 'you' : 'champion ' + i;
   return `<div class="row${i === HUMAN ? ' me' : ''}"><span>${rank}. ${who}</span><span>${scores[i].toFixed(1)}</span></div>`;
 }
+
+el('legend').innerHTML = NODE.map((n) =>
+  `<s class="${n.shape === 'square' ? 'sq' : ''}" style="background:${n.color}"></s><span>${n.name} — ${n.use}</span>`
+).join('') + KIND_NAME.map((k, i) =>
+  `<s style="background:${KIND_COLOR[i]}"></s><span>${k}</span>`
+).join('') + '<i style="grid-column:1/-1">white ring = great node, green ring = your current objective</i>';
 
 function render() {
   if (!env) return;
@@ -328,6 +599,7 @@ window.__realm = {
   get tick() { return tick; },
   get champion() { return champion; },
   get genome() { return genome; },
+  get toast() { return el('toast').textContent; },
   restart,
   set paused(v) { paused = v; }
 };

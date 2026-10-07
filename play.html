@@ -17,6 +17,9 @@ h1 span{color:var(--dim);font-weight:400}
 .card h2{margin:0 0 6px;font-size:12px;color:var(--dim);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 #stats{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-variant-numeric:tabular-nums}
 #stats b{color:var(--dim);font-weight:500}
+#chan{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;font-variant-numeric:tabular-nums}
+#chan b{color:var(--dim);font-weight:500}
+#chan i{color:var(--dim);font-style:normal;font-size:11px}
 #board{font-variant-numeric:tabular-nums;font-size:13px}
 #board .row{display:flex;justify-content:space-between;gap:8px}
 #board .row.me{color:var(--me);font-weight:600}
@@ -36,6 +39,7 @@ a{color:#58a6ff}
   <canvas id="view" width="720" height="720"></canvas>
   <div id="side">
     <div class="card"><h2>you</h2><div id="stats"></div></div>
+    <div class="card"><h2>your score per 1k ticks</h2><div id="chan"></div></div>
     <div class="card"><h2>reward board</h2><div id="board"></div></div>
     <canvas id="mini" width="236" height="236"></canvas>
   </div>
@@ -104,6 +108,9 @@ const outputs = new Float32Array(slots * REALM.dims.nOut);
 const actions = new Int32Array(slots);
 const obs = new Float32Array(REALM.dims.nIn);
 const humanOut = new Float32Array(REALM.dims.nOut);
+const CHANNELS = REALM.rewardChannels || [];
+const CHAN_HINT = { survival: 'stay alive', progress: 'harvest, craft, sell', combat: 'fight', cooperation: 'great nodes, boss' };
+let chan = new Float64Array(CHANNELS.length);
 
 const MOVE_KEYS = {
   arrowup: [3], w: [3], arrowdown: [2], s: [2], arrowleft: [1], a: [1], arrowright: [0], d: [0]
@@ -127,6 +134,7 @@ function makeEnv(seed) {
     npcs.push(new RealtimeNpc(genome, { seed: seed + a, agent: a, maxEdges: genome.edges.length, learning: false }));
   }
   scores = new Float64Array(slots);
+  chan = new Float64Array(CHANNELS.length);
   deaths = new Int32Array(slots);
   tick = 0;
   snap = env.snapshot();
@@ -141,6 +149,7 @@ function stepOnce() {
     outputs.set(npcs[a].outputs, a * REALM.dims.nOut);
   }
   env.step(actions, outputs, tick);
+  for (let c = 0; c < CHANNELS.length; c++) chan[c] += env.rewardCh[HUMAN * CHANNELS.length + c] / REWARD_SCALE;
   for (let a = 0; a < slots; a++) {
     scores[a] += env.reward[a] / REWARD_SCALE;
     const npc = npcs[a];
@@ -233,6 +242,13 @@ function drawPanels(nowMs) {
     ['tick', tick]
   ];
   el('stats').innerHTML = stats.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+
+  const per1k = (v) => v / Math.max(1, tick / 1000);
+  const earned = chan.reduce((s, v) => s + Math.max(0, v), 0);
+  el('chan').innerHTML = CHANNELS.map((name, c) => {
+    const share = earned > 0 ? Math.round((100 * Math.max(0, chan[c])) / earned) : 0;
+    return `<b>${name}</b><span>${per1k(chan[c]).toFixed(2)}</span><i>${share}%</i>`;
+  }).join('') + `<i style="grid-column:1/-1">${CHANNELS.map((n) => CHAN_HINT[n]).filter(Boolean).join(' · ')}</i>`;
 
   if (nowMs - boardAt > 250) {
     boardAt = nowMs;

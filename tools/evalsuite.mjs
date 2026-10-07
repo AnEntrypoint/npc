@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
-import { Brain, Rng, mix, evoConfig, genomeFromJSON, STAT, STRUCT_PERIOD, REWARD_SCALE } from '../src/core.js';
+import { Brain, Rng, mix, evoConfig, genomeFromJSON, STAT, NSTATS, STRUCT_PERIOD, REWARD_SCALE } from '../src/core.js';
 
 const SELF = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(SELF);
@@ -22,9 +22,11 @@ const LABELS = ['idle', 'walk', 'interact', 'melee', 'range', 'mage', 'craftTool
 const CAUSES = ['mob', 'boss', 'animal', 'player', 'starve', 'age', 'other'];
 const MOVE_THRESHOLD = 32;
 const MIN_SPARSE_EDGES = 256;
+const CHANNELS = [];
+let WEIGHTS = [];
 
 function parseArgs(argv) {
-  const opts = { game: 'realm', suites: '', seeds: '2', baseSeed: 7, worlds: 4, periods: 1, top: 4, jobs: 0, opponent: '', assign: 'roundrobin', out: '', json: false, write: true, files: [] };
+  const opts = { game: 'realm', suites: '', seeds: '2', baseSeed: 7, worlds: 4, periods: 1, top: 4, jobs: 0, gate: -1, opponent: '', assign: 'roundrobin', out: '', lesion: '', popWeights: '', json: false, write: true, files: [] };
   for (const arg of argv) {
     const m = /^--([a-zA-Z-]+)(?:=(.*))?$/.exec(arg);
     if (!m) { opts.files.push(arg); continue; }
@@ -104,8 +106,10 @@ function assignRole(index, count, members, mode) {
   return shares.map((v, k) => (v > 0 ? k : -1)).filter((k) => k >= 0).pop();
 }
 
+const RATION_TRADE_GOLD = 8;
+
 function newSide(nOut) {
-  return { ticks: 0, reward: 0, closed: 0, labelCounts: new Float64Array(Math.max(LABELS.length, 2 * nOut)), dist: 0, crafts: 0, buys: 0, moving: 0, safe: 0, ally: 0, allyLearner: 0, tool: 0, weap: 0, maxTool: 0, maxWeap: 0, causes: Object.fromEntries(CAUSES.map((c) => [c, 0])) };
+  return { ticks: 0, reward: 0, closed: 0, labelCounts: new Float64Array(Math.max(LABELS.length, 2 * nOut)), dist: 0, crafts: 0, buys: 0, moving: 0, safe: 0, ally: 0, allyLearner: 0, tool: 0, weap: 0, maxTool: 0, maxWeap: 0, attacks: 0, casts: 0, castStyleMix: new Float64Array(3), perk: 0, maxPerk: 0, coverTicks: 0, coverFirstHits: 0, tradeBought: 0, tradeSold: 0, mobArchetype: new Float64Array(5), bossPhaseHits: new Float64Array(4), saleTownUnits: new Float64Array(4), saleTownGold: new Float64Array(4), chan: new Float64Array(CHANNELS.length), causes: Object.fromEntries(CAUSES.map((c) => [c, 0])) };
 }
 
 function mergeSide(into, from) {
@@ -161,9 +165,10 @@ function runWorld(context, task) {
   const worldSeed = mix(task.seed, task.world, 0, 9);
   const cfg = game.defaultCfg();
   if (!bots) cfg.learnerSlots = slots;
-  const stats = new Int32Array(16);
+  const stats = new Int32Array(NSTATS);
   const env = game.createEnv(worldSeed, cfg, true, stats);
   env.difficulty = 100;
+  if (context.gate >= 0) env.gateShift = context.gate;
   const swapped = duel && (task.world & 1) === 1;
   const sideOf = (slot) => (duel && ((slot + (swapped ? 1 : 0)) & 1) === 1 ? 'B' : 'A');
   const pools = { A: context.genomes, B: context.opponent };
@@ -198,8 +203,12 @@ function runWorld(context, task) {
   const hasAlly = info && typeof env.allyCount === 'function';
   const allyRadius2 = info ? info.ALLY_RADIUS * info.ALLY_RADIUS : 0;
   const harvestIndex = info ? harvestTypeIndex(info) : null;
+  const lesionIdx = context.lesion && game.inputNames ? game.inputNames.indexOf(context.lesion) : -1;
+  if (context.lesion && lesionIdx < 0) throw new Error('lesion input not found: ' + context.lesion + ' (have ' + (game.inputNames || []).length + ' names)');
   const popTracking = Boolean(roleSides && info);
+  const hasChannels = channelCount > 0 && Boolean(env.rewardCh);
   const bossCount = info ? info.ANIMAL0 - info.BOSS0 : 0;
+  const townBase = info && info.NODE_FIRST_TOWN !== undefined ? info.NODE_FIRST_TOWN : 200;
   const bossWasDead = new Uint8Array(bossCount);
   const bossLast = Array.from({ length: bossCount }, () => new Float64Array(bundle ? bundle.members.length : 0).fill(-Infinity));
   const closeLife = (slot, cause) => {
@@ -223,6 +232,7 @@ function runWorld(context, task) {
     }
     for (let slot = 0; slot < slots; slot++) {
       env.observe(slot, obs, tick);
+      if (lesionIdx >= 0) obs[lesionIdx] = 0;
       actions[slot] = brains[slot].step(obs, new Rng(mix(worldSeed, tick, slot, 1)));
       for (let k = 0; k < nOut; k++) outputs[slot * nOut + k] = brains[slot].act[nIn + k];
     }
@@ -234,10 +244,18 @@ function runWorld(context, task) {
       for (const side of targets) {
         side.ticks++;
         side.reward += env.reward[slot] / REWARD_SCALE;
+        if (hasChannels) for (let c = 0; c < channelCount; c++) side.chan[c] += env.rewardCh[slot * channelCount + c] / REWARD_SCALE;
         side.labelCounts[info ? actionLabel(env, slot, info.ACT) : signedOutputLabel(outputs, slot * nOut, nOut)]++;
       }
       if (info) {
         const b = slot * fields;
+        const act = env.act[slot];
+        const tgt = env.atkTgt[slot];
+        const inCover = env.inCover(f[b + F.X], f[b + F.Y]);
+        const soldUnits = (prev[b + F.WOOD] + prev[b + F.ORE]) - (f[b + F.WOOD] + f[b + F.ORE]);
+        const sold = soldUnits > 0 && f[b + F.GOLD] > prev[b + F.GOLD];
+        const townIdx = sold && env.tgtNode[slot] >= townBase && env.tgtNode[slot] < townBase + 4 ? env.tgtNode[slot] - townBase : -1;
+        const perk = env.perkTier(slot);
         let near = false;
         let cross = false;
         let same = false;
@@ -258,6 +276,10 @@ function runWorld(context, task) {
           if (f[b + F.TOOL] > prev[b + F.TOOL]) side.crafts++;
           if (f[b + F.WEAP] > prev[b + F.WEAP]) side.crafts++;
           if (f[b + F.RAT] > prev[b + F.RAT] && f[b + F.GOLD] === prev[b + F.GOLD] - 10) side.buys++;
+          const ratDelta = f[b + F.RAT] - prev[b + F.RAT];
+          const goldDelta = f[b + F.GOLD] - prev[b + F.GOLD];
+          if (goldDelta === -RATION_TRADE_GOLD && ratDelta > 0) side.tradeBought += ratDelta;
+          if (goldDelta === RATION_TRADE_GOLD && ratDelta < 0) side.tradeSold -= ratDelta;
           side.dist += Math.hypot(f[b + F.X] - prev[b + F.X], f[b + F.Y] - prev[b + F.Y]);
           side.maxTool = Math.max(side.maxTool, f[b + F.TOOL]);
           side.maxWeap = Math.max(side.maxWeap, f[b + F.WEAP]);
@@ -265,6 +287,17 @@ function runWorld(context, task) {
           if (hasAlly && env.allyCount(slot) > 0) side.ally++;
           if (near) side.allyLearner++;
           if (side.crossAlly !== undefined) { if (cross) side.crossAlly++; if (same) side.sameAlly++; }
+          side.perk += perk;
+          if (perk > side.maxPerk) side.maxPerk = perk;
+          if (inCover) side.coverTicks++;
+          if (act === info.ACT.ATTACK) {
+            side.attacks++;
+            if (env.atkCast[slot]) { side.casts++; side.castStyleMix[Math.min(2, env.atkStyle[slot])]++; }
+            if (tgt >= info.MOB0 && tgt < info.BOSS0) side.mobArchetype[(tgt - info.MOB0) % 5]++;
+            else if (info.isBoss(tgt)) side.bossPhaseHits[env.bossPhase(tgt)]++;
+            if (inCover && tgt >= info.MOB0) side.coverFirstHits++;
+          }
+          if (townIdx >= 0) { side.saleTownUnits[townIdx] += soldUnits; side.saleTownGold[townIdx] += f[b + F.GOLD] - prev[b + F.GOLD]; }
         }
       }
       lifeTicks[slot]++;
@@ -358,7 +391,9 @@ async function prepareContext(config) {
   const bundle = loadBundle(parsed, game, config.genome);
   const genomes = bundle ? null : loadGenomes(config.genome, game, config.top);
   const opponent = config.opponent ? loadGenomes(config.opponent, game, config.top) : null;
-  return { game, info, genomes, opponent, bundle, assign: config.assign };
+  CHANNELS.length = 0;
+  CHANNELS.push(...(game.rewardChannels || []));
+  return { game, info, genomes, opponent, bundle, assign: config.assign, lesion: config.lesion || '', gate: config.gate === undefined ? -1 : config.gate };
 }
 
 if (!isMainThread) {
@@ -388,12 +423,17 @@ function maxShare(counts) {
 function sideMetrics(side, hasInfo) {
   const lives = Math.max(1, side.closed);
   const per1k = (v) => (side.ticks > 0 ? (v / side.ticks) * 1000 : null);
+  const mobTotal = side.mobArchetype ? side.mobArchetype.reduce((s, v) => s + v, 0) : 0;
+  const bossTotal = side.bossPhaseHits ? side.bossPhaseHits.reduce((s, v) => s + v, 0) : 0;
+  const townUnits = side.saleTownUnits ? side.saleTownUnits.reduce((s, v) => s + v, 0) : 0;
   const metrics = {
     rate: side.ticks > 0 ? side.reward / side.ticks : null,
     life: side.closed > 0 ? side.ticks / side.closed : null,
     actionEntropy: entropyBits(Array.from(side.labelCounts)),
     actionMaxShare: maxShare(Array.from(side.labelCounts))
   };
+  for (let c = 0; c < CHANNELS.length; c++) metrics['ch_' + CHANNELS[c] + '1k'] = per1k(side.chan ? side.chan[c] : 0);
+  WEIGHTS.forEach((w, i) => { metrics[WEIGHTS.length > 1 ? 'rateW' + (i + 1) : 'rateWeighted'] = per1k(w.reduce((s, ww, c) => s + ww * (side.chan ? side.chan[c] : 0), 0)); });
   if (!hasInfo) return metrics;
   Object.assign(metrics, {
     movingShare: side.ticks > 0 ? side.moving / side.ticks : null,
@@ -405,8 +445,22 @@ function sideMetrics(side, hasInfo) {
     gearTierMax: Math.max(side.maxTool, side.maxWeap),
     safeShare: side.ticks > 0 ? side.safe / side.ticks : null,
     allyShare: side.ticks > 0 ? side.ally / side.ticks : null,
-    allyLearnerShare: side.ticks > 0 ? side.allyLearner / side.ticks : null
+    allyLearnerShare: side.ticks > 0 ? side.allyLearner / side.ticks : null,
+    perkTier: side.ticks > 0 ? side.perk / side.ticks : null,
+    perkTierMax: side.maxPerk,
+    attacks1k: per1k(side.attacks),
+    casts1k: per1k(side.casts),
+    castShare: side.attacks > 0 ? side.casts / side.attacks : null,
+    coverShare: side.ticks > 0 ? side.coverTicks / side.ticks : null,
+    coverFirstHits1k: per1k(side.coverFirstHits),
+    tradeBought1k: per1k(side.tradeBought),
+    tradeSold1k: per1k(side.tradeSold),
+    mobArchetypeEntropy: entropyBits(Array.from(side.mobArchetype)),
+    bossPhase3Share: bossTotal > 0 ? side.bossPhaseHits[3] / bossTotal : null,
+    saleGoldPerUnit: townUnits > 0 ? side.saleTownGold.reduce((s, v) => s + v, 0) / townUnits : null
   });
+  for (let k = 0; k < 5; k++) metrics['mobArch' + k] = mobTotal > 0 ? side.mobArchetype[k] / mobTotal : null;
+  for (let k = 0; k < 4; k++) metrics['saleTown' + k] = townUnits > 0 ? side.saleTownUnits[k] / townUnits : null;
   for (const cause of CAUSES) metrics['death_' + cause] = side.causes[cause] / lives;
   return metrics;
 }
@@ -642,8 +696,11 @@ async function main() {
   const { game, info } = await loadGameModule(opts.game);
   const hasInfo = Boolean(info);
   const canSelfPlay = Boolean(game.maxLearners);
-  const config = { game: opts.game, genome: genomeFile, opponent: opts.opponent ? path.resolve(opts.opponent) : '', top: opts.top, assign: opts.assign };
+  const config = { game: opts.game, genome: genomeFile, opponent: opts.opponent ? path.resolve(opts.opponent) : '', top: opts.top, assign: opts.assign, lesion: opts.lesion, gate: opts.gate };
   const probe = await prepareContext(config);
+  WEIGHTS = opts.popWeights ? opts.popWeights.split(';').map((v) => v.split(',').map(Number)) : [];
+  if (WEIGHTS.length && !CHANNELS.length) throw new Error('--popWeights needs a game with rewardChannels');
+  for (const w of WEIGHTS) if (w.length !== CHANNELS.length) throw new Error('--popWeights needs ' + CHANNELS.length + ' weights per vector, got ' + w.join(','));
   const bundle = probe.bundle;
   const defaults = bundle ? ['bots', 'botsRole'].concat(canSelfPlay ? ['selfplay'] : [], opts.opponent && canSelfPlay ? ['h2hSingle'] : []) : ['bots'].concat(opts.opponent && canSelfPlay ? ['h2h'] : [], canSelfPlay ? ['selfplay'] : []);
   const requested = opts.suites ? opts.suites.split(',') : defaults;
@@ -682,7 +739,7 @@ async function main() {
     }
   });
   if (process.stderr.isTTY) process.stderr.write('\n');
-  const output = { tool: 'evalsuite', version: EVAL_VERSION, genome: genomeFile, opponent: config.opponent || null, game: game.id, opts: { suites, seeds, worlds: opts.worlds, periods: opts.periods, top: opts.top }, suites: {}, when: new Date().toISOString() };
+  const output = { tool: 'evalsuite', version: EVAL_VERSION, genome: genomeFile, opponent: config.opponent || null, game: game.id, lesion: opts.lesion || null, opts: { suites, seeds, worlds: opts.worlds, periods: opts.periods, top: opts.top, gate: opts.gate, popWeights: opts.popWeights || null }, suites: {}, when: new Date().toISOString() };
   if (bundle) output.opts.assign = opts.assign;
   for (const run of runs) {
     const perSeed = seeds.map((seed) => {
@@ -721,6 +778,7 @@ async function main() {
   if (opts.json) console.log(JSON.stringify(output));
   else {
     console.log('evalsuite ' + path.basename(genomeFile) + ' game=' + game.id + ' seeds=' + seeds.join(',') + ' worlds/seed=' + opts.worlds + ' periods=' + opts.periods + (config.opponent ? ' opponent=' + path.basename(config.opponent) : ''));
+    if (WEIGHTS.length) console.log('weights  ' + WEIGHTS.map((w, i) => (WEIGHTS.length > 1 ? 'rateW' + (i + 1) : 'rateWeighted') + '=' + w.join(',')).join('   '));
     console.log(formatTable(output));
     if (output.population) console.log('\n' + formatPopulation(output.population));
     console.log('time ' + output.timing.wallSeconds.toFixed(1) + 's wall, ' + output.timing.cpuSeconds.toFixed(1) + 's cpu, ' + jobs + ' workers, ' + output.timing.worldRuns + ' world runs');

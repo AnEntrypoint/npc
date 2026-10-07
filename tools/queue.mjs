@@ -15,13 +15,15 @@ const OLD_DIR = path.join(RUNS, '.old');
 const INBOX_DIR = path.join(RUNS, '.queue-inbox');
 const SELF = fileURLToPath(import.meta.url);
 const PROFILE_PREFIX = 'chrome-q-';
+const GM_CDP_PROFILE = 'spoint-cdp-';
+const DESKTOP_GPU = /discord|steam|msedge|dwm\.exe|explorer\.exe|slack|spotify|firefox|code\.exe|conhost|csrss|dllhost|runtimebroker|searchapp|widget|textinput|applicationframe|shellexperience|startmenuexperience|systemsettings|lockapp|gamebar/i;
 const SHARED_PROFILE = path.join(RUNS, 'chrome-shared');
 const DONE_LINE = /^(done|tests done.*|profile done|bench done)$/;
 const RETRIABLE = /device (was )?lost|GPU device lost|context lost|DXGI|requestDevice|no (webgpu )?adapter|out of memory|GPUValidationError|GPUInternalError|OperationError|external Instance|chrome exited|stalled/i;
 const CHROME_FLAGS = ['--headless=new', '--enable-unsafe-webgpu', '--enable-webgpu-developer-features', '--ignore-gpu-blocklist', '--disable-gpu-watchdog', '--no-first-run', '--no-sandbox', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-frame-rate-limit', '--disable-gpu-vsync', '--disable-extensions', '--disable-default-apps', '--disable-component-update', '--disable-sync', '--disable-domain-reliability', '--disable-client-side-phishing-detection', '--metrics-recording-only', '--mute-audio', '--disable-hang-monitor', '--disable-ipc-flooding-protection', '--disable-prompt-on-repost', '--disable-breakpad', '--disable-dev-shm-usage', '--disable-features=TranslateUI,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,AcceptCHFrame,AutofillServerCommunication,PasswordManagerOnboarding'];
 const PAGE_PATTERN = /^[a-z0-9_-]+$/i;
 const EXTERNAL_PAGE = /\/dev\/(rllong|longrun|ab|perf|harness|blobsp)\.html/;
-const DEFAULTS = { port: 8123, graceSeconds: 240, stallSeconds: 600, pollSeconds: 5, exitGraceSeconds: 90, externalCheck: true, externalIdleSeconds: 300, retry: '', maxAttempts: 2, lockTimeoutHours: 12, chrome: '', profileMode: 'shared' };
+const DEFAULTS = { port: 8123, graceSeconds: 240, stallSeconds: 600, pollSeconds: 5, exitGraceSeconds: 90, externalCheck: true, externalIdleSeconds: 300, retry: '', maxAttempts: 2, lockTimeoutHours: 12, chrome: '', profileMode: 'shared', gpuHealth: true, gpuHealthResetMinutes: 10, gpuHealthWaitMinutes: 30, gpuHealthPollSeconds: 60, gpuHealthHoldSeconds: 90, envRetryCap: 8 };
 const TERMINAL = new Set(['done', 'failed', 'timeout', 'skipped', 'stopped']);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,7 +46,11 @@ function writeAtomic(file, text) {
 
 function loadState() {
   for (let attempt = 0; attempt < 20; attempt++) {
-    try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; blockMs(50); }
+    try {
+      const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      if (state && state.options) state.options = Object.assign({}, DEFAULTS, state.options);
+      return state;
+    } catch (error) { if (error.code === 'ENOENT') return null; blockMs(50); }
   }
   return null;
 }
@@ -238,6 +244,15 @@ function pickNext(state) {
   return null;
 }
 
+function syncOrder(state) {
+  const fresh = loadState();
+  if (!fresh || !Array.isArray(fresh.jobs)) return false;
+  const rank = new Map(fresh.jobs.map((job, i) => [job.name, i]));
+  const before = state.jobs.map((job) => job.name).join(',');
+  state.jobs.sort((a, b) => (rank.has(a.name) ? rank.get(a.name) : 1e6) - (rank.has(b.name) ? rank.get(b.name) : 1e6));
+  return state.jobs.map((job) => job.name).join(',') !== before;
+}
+
 function ingestInbox(state) {
   let count = 0;
   if (!fs.existsSync(INBOX_DIR)) return count;
@@ -271,6 +286,98 @@ async function waitForExternalGpu(state, job, handle) {
     if (stopRequested()) return;
     if (now() - started > state.options.lockTimeoutHours * 3600000) throw new Error('external GPU job never finished');
     await sleep(5000);
+    handle.heartbeat({ job: job.name });
+  }
+}
+
+function gpuComputePids() {
+  const result = spawnSync('nvidia-smi', ['--query-compute-apps=pid', '--format=csv,noheader'], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+  return (result.stdout || '').split(/\r?\n/).map((line) => Number.parseInt(line.trim(), 10)).filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+function commandsOf(pids) {
+  const map = new Map();
+  if (!pids.length || process.platform !== 'win32') return map;
+  const script = 'Get-CimInstance Win32_Process -Filter "' + pids.map((pid) => 'ProcessId=' + pid).join(' or ') + '" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress';
+  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+  const text = (result.stdout || '').trim();
+  if (!text) return map;
+  const parsed = JSON.parse(text);
+  for (const row of Array.isArray(parsed) ? parsed : [parsed]) map.set(row.ProcessId, row.CommandLine || '');
+  return map;
+}
+
+function foreignGpuPids(state) {
+  const pids = gpuComputePids();
+  if (!pids.length) return { blocking: [], chrome: [] };
+  const commands = commandsOf(pids);
+  // A pid nvidia-smi listed a moment ago can already be gone and recycled by an
+  // unrelated process, so re-read the card and keep only pids still computing.
+  const still = new Set(gpuComputePids());
+  const ours = new Set(state.jobs.filter((j) => j.chromePid).map((j) => j.chromePid));
+  const blocking = [];
+  const chrome = [];
+  for (const pid of pids) {
+    if (!still.has(pid)) continue;
+    if (ours.has(pid)) continue;
+    const command = commands.get(pid) || '';
+    if (!command) continue;
+    if (command.includes(SHARED_PROFILE) || command.includes(PROFILE_PREFIX)) continue;
+    if (command.includes(GM_CDP_PROFILE)) continue;
+    if (DESKTOP_GPU.test(command)) continue;
+    if (/chrome\.exe/i.test(command)) chrome.push(pid);
+    else blocking.push(pid);
+  }
+  return { blocking, chrome };
+}
+
+function driverResets(minutes) {
+  if (process.platform !== 'win32') return 0;
+  const script = "& { (Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='nvlddmkm';StartTime=(Get-Date).AddMinutes(-" + (Number(minutes) || 10) + ')} -ErrorAction SilentlyContinue | Measure-Object).Count }';
+  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const count = Number.parseInt(String(result.stdout || '').trim(), 10);
+  return Number.isInteger(count) ? count : 0;
+}
+
+function gpuHealthNow(state) {
+  const resets = driverResets(state.options.gpuHealthResetMinutes);
+  const foreign = foreignGpuPids(state);
+  const reasons = [];
+  if (resets) reasons.push(resets + ' nvlddmkm reset(s) in ' + state.options.gpuHealthResetMinutes + 'min');
+  if (foreign.blocking.length) reasons.push('foreign GPU pid ' + foreign.blocking.join(',') + ' holds the card');
+  return { ok: reasons.length === 0, resets, foreign: foreign.blocking, chrome: foreign.chrome, reasons };
+}
+
+// A lost device is the environment (driver reset / TDR under a foreign workload), not the job:
+// charging it against maxAttempts kills healthy jobs during someone else's GPU storm.
+function isEnvironmentalFailure(outcome) {
+  return /instance dropped|device (lost|removed)|operationerror|nvlddmkm/i.test(String(outcome.reason || ''));
+}
+
+async function waitForGpuHealth(state, job, handle) {
+  const options = state.options;
+  if (!options.gpuHealth) return;
+  const started = now();
+  let okSince = 0;
+  for (;;) {
+    const health = gpuHealthNow(state);
+    if (health.ok) {
+      if (!okSince) okSince = now();
+      if (now() - okSince >= options.gpuHealthHoldSeconds * 1000) return;
+    } else {
+      okSince = 0;
+      const note = [health.foreign.length ? 'foreign GPU pid ' + health.foreign.join(',') : '', health.chrome.length ? 'other chrome pid ' + health.chrome.join(',') : ''].filter(Boolean).join('; ');
+      job.status = 'waiting';
+      job.reason = 'gpu unhealthy: ' + health.reasons.join(', ') + (note ? ' (' + note + ')' : '');
+      saveState(state);
+      console.log('gpu unhealthy before ' + job.name + ': ' + job.reason);
+    }
+    if (stopRequested()) throw new Error('stopped');
+    if (now() - started > options.gpuHealthWaitMinutes * 60000) {
+      console.log('gpu waited ' + options.gpuHealthWaitMinutes + 'min; proceeding with ' + job.name);
+      return;
+    }
+    await sleep(options.gpuHealthPollSeconds * 1000);
     handle.heartbeat({ job: job.name });
   }
 }
@@ -340,9 +447,22 @@ async function runJob(state, job) {
     if (stopRequested()) throw new Error('stopped');
     let outcome = null;
     while (job.attempts < options.maxAttempts) {
+      await waitForGpuHealth(state, job, handle);
+      job.status = 'running';
+      job.reason = null;
+      saveState(state);
       job.attempts++;
       outcome = await runAttempt(state, job, handle);
       if (outcome.ok || outcome.stopped || outcome.timeout || !outcome.retriable) break;
+      if (isEnvironmentalFailure(outcome) && (job.envRetries || 0) < options.envRetryCap) {
+        job.envRetries = (job.envRetries || 0) + 1;
+        job.attempts--;
+        job.reason = 'gpu device lost, environmental retry ' + job.envRetries + '/' + options.envRetryCap + ': ' + outcome.reason;
+        saveState(state);
+        console.log(job.name + ': ' + job.reason);
+        await sleep(15000);
+        continue;
+      }
       job.reason = 'attempt ' + job.attempts + ' failed (' + outcome.reason + '), retrying';
       saveState(state);
       await sleep(5000);
@@ -397,6 +517,7 @@ async function runner() {
     for (;;) {
       if (stopRequested()) { log('stop requested'); break; }
       ingestInbox(state);
+      if (syncOrder(state)) log('job order reloaded from disk');
       const job = pickNext(state);
       if (!job) { if (ingestInbox(state) > 0) continue; break; }
       log('job ' + job.name + ' starting');
@@ -421,6 +542,7 @@ function parseFlags(argv) {
     if (!m) { rest.push(arg); continue; }
     const camel = m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     if (camel === 'noExternalCheck') options.externalCheck = false;
+    else if (camel === 'noGpuHealth') options.gpuHealth = false;
     else if (camel in options) options[camel] = typeof options[camel] === 'number' ? Number(m[2]) : m[2];
     else flags.add(camel);
   }
@@ -450,7 +572,10 @@ async function start(argv, resume) {
   if (resume) {
     if (!existing) throw new Error('nothing to resume');
     state = existing;
-    state.options = Object.assign({}, state.options, options);
+    const explicit = new Set(argv.filter((a) => a.startsWith('--')).map((a) => (/^--([a-zA-Z-]+)/.exec(a) || ['', ''])[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase())));
+    for (const key of explicit) if (key in options) state.options[key] = options[key];
+    if (explicit.has('noExternalCheck')) state.options.externalCheck = false;
+    if (explicit.has('noGpuHealth')) state.options.gpuHealth = false;
     const requeue = flags.has('retryFailed') ? ['stopped', 'failed', 'timeout', 'skipped'] : ['stopped'];
     const named = new Set(options.retry ? options.retry.split(',') : []);
     for (const job of state.jobs) if (requeue.includes(job.status) || named.has(job.name)) Object.assign(job, { status: 'pending', attempts: 0, reason: null, startedAt: null, endedAt: null });
@@ -523,10 +648,15 @@ async function bump(argv) {
   const { rest } = parseFlags(argv);
   if (!rest.length) throw new Error('usage: node tools/queue.mjs bump <name-prefix> [prefix...]');
   const match = (name) => rest.some((key) => name === key || name.startsWith(key));
-  await stop();
   const state = loadState();
   if (!state) throw new Error('no queue state to bump');
-  for (const job of state.jobs) if (job.status === 'stopped') Object.assign(job, { status: 'pending', attempts: 0, reason: null, startedAt: null, endedAt: null, lastLine: null });
+  const live = !!(state.runnerPid && pidAlive(state.runnerPid));
+  if (live) {
+    const running = state.jobs.filter((job) => job.status === 'running' && match(job.name)).map((job) => job.name);
+    if (running.length) throw new Error('already running, bump only reorders pending work: ' + running.join(', '));
+  } else {
+    for (const job of state.jobs) if (job.status === 'stopped') Object.assign(job, { status: 'pending', attempts: 0, reason: null, startedAt: null, endedAt: null, lastLine: null });
+  }
   const moved = state.jobs.filter((job) => match(job.name) && job.status === 'pending');
   if (!moved.length) throw new Error('no pending job matches ' + rest.join(', ') + '; pending: ' + (state.jobs.filter((job) => job.status === 'pending').map((job) => job.name).join(', ') || '-'));
   moved.sort((a, b) => rest.findIndex((key) => a.name.startsWith(key)) - rest.findIndex((key) => b.name.startsWith(key)));
@@ -536,6 +666,7 @@ async function bump(argv) {
   state.jobs = [...kept.slice(0, at), ...moved, ...kept.slice(at)];
   saveState(state);
   console.log('bumped ' + moved.map((job) => job.name).join(', ') + ' ahead of the pending queue (' + at + ' finished job(s) before it)');
+  if (live) { console.log('runner pid ' + state.runnerPid + ' picks up the new order after its current job; nothing was restarted'); return; }
   await start([], true);
 }
 
@@ -555,6 +686,11 @@ async function main() {
   else if (verb === 'run') await runner();
   else if (verb === 'stop') await stop();
   else if (verb === 'bump') await bump(argv);
+  else if (verb === 'gpu') {
+    const state = loadState() || { jobs: [], options: Object.assign({}, DEFAULTS) };
+    const health = gpuHealthNow(state);
+    console.log('gpu: ' + (health.ok ? 'healthy' : 'UNHEALTHY - ' + health.reasons.join(', ')) + ' | nvlddmkm resets in ' + state.options.gpuHealthResetMinutes + 'min: ' + health.resets + ' | foreign GPU pid: ' + (health.foreign.join(',') || '-') + ' | other chrome on gpu: ' + (health.chrome.join(',') || '-'));
+  }
   else if (verb === 'status') {
     const state = loadState();
     if (!state) { console.log('no queue state'); return; }

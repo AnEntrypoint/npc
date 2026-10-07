@@ -1,0 +1,16 @@
+{
+  "id": "heclgang/npc-lesion",
+  "title": "npc lesion",
+  "code_file": "lesion.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "heclgang/npc-brain-trainer"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

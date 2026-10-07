@@ -17,5 +17,6 @@ runs/.r*.cjs
 node_modules/
 .DS_Store
 *.tmp
-kaggle/
+kaggle/payload/
+kaggle/out/
 .scratch/
